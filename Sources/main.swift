@@ -204,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastStatus: [String: String] = [:]
     var lastFinished: [String: Date] = [:]   // host name -> when a session there last went working -> idle
     var timer: Timer?
+    var ticker: Timer?
     var polling = false
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -218,6 +219,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: max(2, config.interval ?? 5), repeats: true) { [weak self] _ in
             self?.poll()
+        }
+        if ticker == nil {
+            ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+            ticker?.tolerance = 0.1
         }
     }
 
@@ -256,10 +261,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         //   red = waiting (name in red), orange = working (name if only one + time working),
         //   green = idle, ✓ = time since a session last finished (shown for an hour).
         // Use the most detailed title that fits in maxWidth; macOS silently pushes a too-wide item off-screen.
+        renderTitle()
+    }
+
+    func renderTitle() {
         let maxW = CGFloat(config.maxWidth ?? 600)
-        var t = buildTitle(r, level: 0)
-        for level in 1...3 where t.size().width > maxW { t = buildTitle(r, level: level) }
+        var t = buildTitle(results, level: 0)
+        for level in 1...3 where t.size().width > maxW { t = buildTitle(results, level: level) }
         item.button?.attributedTitle = t
+    }
+
+    /// Between polls, redraw every second while any shown time is still in seconds, so "41s" ticks up.
+    func tick() {
+        let now = Date()
+        let recent = { (d: Date?) in d.map { now.timeIntervalSince($0) < 61 } ?? false }
+        let working = results.flatMap { $0.sessions }.filter { color(for: $0.status) != .systemGreen }
+        if working.contains(where: { recent($0.statusSince) }) || lastFinished.values.contains(where: { recent($0) }) {
+            renderTitle()
+        }
     }
 
     /// level 0: full · 1: shorter names, tighter gaps · 2: working sessions as "● time" without names · 3: counts only.
