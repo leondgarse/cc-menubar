@@ -54,6 +54,9 @@ for f in "$HOME"/.claude/sessions/*.json; do
   fi
   printf '%s\t%s\n' "$(tr -d '\n\t' < "$f")" "$title"
 done
+# Usage limits saved by statusline.sh (cc-menubar), with the file's mtime.
+u="$HOME/.cache/cc-menubar/usage.json"
+if [ -f "$u" ]; then printf 'USAGE\t%s\t%s\n' "$(date -r "$u" +%s)" "$(tr -d '\n\t' < "$u")"; fi
 """#
 
 struct Session {
@@ -74,6 +77,7 @@ struct HostResult {
     let host: HostConfig
     var sessions: [Session] = []
     var error: String?
+    var usage: (json: Data, time: Date)?   // this host's ~/.cache/cc-menubar/usage.json
 }
 
 let sshOpts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
@@ -115,6 +119,13 @@ func collect(_ host: HostConfig) -> HostResult {
         return res
     }
     for line in out.split(separator: "\n") {
+        if line.hasPrefix("USAGE\t") {
+            let u = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            if u.count == 3, let ts = Double(u[1]), let d = String(u[2]).data(using: .utf8) {
+                res.usage = (d, Date(timeIntervalSince1970: ts))
+            }
+            continue
+        }
         let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
         guard let data = parts.first?.data(using: .utf8),
               let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
@@ -167,10 +178,17 @@ struct UsageWindow { let pct: Double; let resetsAt: Date }
 
 let usageURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/cc-menubar/usage.json")
 
-func readUsage() -> (fiveHour: UsageWindow?, weekly: UsageWindow?, updated: Date?) {
-    guard let data = try? Data(contentsOf: usageURL),
-          let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let rl = j["rate_limits"] as? [String: Any] else { return (nil, nil, nil) }
+/// Usage from whichever host (or this Mac's file) saw a Claude response most recently.
+/// Assumes all hosts use the same Claude account.
+func readUsage(_ results: [HostResult]) -> (fiveHour: UsageWindow?, weekly: UsageWindow?, updated: Date?, source: String?) {
+    var candidates = results.compactMap { r in r.usage.map { ($0.json, $0.time, r.host.name) } }
+    if candidates.isEmpty, let d = try? Data(contentsOf: usageURL),
+       let m = (try? FileManager.default.attributesOfItem(atPath: usageURL.path))?[.modificationDate] as? Date {
+        candidates.append((d, m, "this Mac"))
+    }
+    guard let best = candidates.max(by: { $0.1 < $1.1 }),
+          let j = try? JSONSerialization.jsonObject(with: best.0) as? [String: Any],
+          let rl = j["rate_limits"] as? [String: Any] else { return (nil, nil, nil, nil) }
     func win(_ k: String) -> UsageWindow? {
         guard let w = rl[k] as? [String: Any], let p = w["used_percentage"] as? Double,
               let r = w["resets_at"] as? Double else { return nil }
@@ -178,8 +196,7 @@ func readUsage() -> (fiveHour: UsageWindow?, weekly: UsageWindow?, updated: Date
         // Window already reset since the last reading: usage starts over.
         return UsageWindow(pct: reset < Date() ? 0 : p, resetsAt: reset)
     }
-    let mod = (try? FileManager.default.attributesOfItem(atPath: usageURL.path))?[.modificationDate] as? Date
-    return (win("five_hour"), win("seven_day"), mod)
+    return (win("five_hour"), win("seven_day"), best.1, best.2)
 }
 
 func untilString(_ d: Date) -> String {
@@ -287,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let nameLen = level == 0 ? 20 : 12
         let hostGap = level == 0 ? "     " : level == 1 ? "    " : "   "
         // Left side: account usage, e.g. "5h 42%  wk 18%" (cyan, orange >= 70%, red >= 90%).
-        let usage = readUsage()
+        let usage = readUsage(r)
         let boldFont = NSFont.boldSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize)
         var hasUsage = false
         for (label, w) in [("5h", usage.fiveHour), ("wk", usage.weekly)] {
@@ -446,7 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         for r in results where !emitted.contains(r.host.name) { addHeader(r) }
         menu.addItem(.separator())
-        let u = readUsage()
+        let u = readUsage(results)
         if u.fiveHour != nil || u.weekly != nil {
             for (label, w) in [("5-hour", u.fiveHour), ("Weekly", u.weekly)] {
                 guard let w = w else { continue }
@@ -459,7 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if let up = u.updated {
                 let ui = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                ui.attributedTitle = NSAttributedString(string: "Usage as of \(ago(up)) ago (updates while a session is active)",
+                ui.attributedTitle = NSAttributedString(string: "Usage as of \(ago(up)) ago, from \(u.source ?? "?") (updates when a session gets a reply)",
                                                         attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 11)])
                 menu.addItem(ui)
             }
