@@ -693,7 +693,7 @@ def run_tray_app() -> int:
         gi.require_version("AppIndicator3", "0.1")
         from gi.repository import AppIndicator3
 
-    from gi.repository import Gdk, GLib, Gtk
+    from gi.repository import Gdk, Gio, GLib, Gtk
 
     class TrayApp:
         def __init__(self) -> None:
@@ -701,9 +701,21 @@ def run_tray_app() -> int:
             self.results: List[HostResult] = []
             self.last_status: Dict[str, str] = {}
             self.last_finished: Dict[str, float] = {}
+            self.current_label: str = "CC …"
+            self.start_time: float = time.time()
             self.polling = False
             self.poll_timer_id: Optional[int] = None
             self.tick_timer_id: Optional[int] = None
+
+            saved_state = os.environ.get("CC_MENUBAR_STATE")
+            if saved_state:
+                try:
+                    st = json.loads(saved_state)
+                    self.last_status = st.get("last_status", {})
+                    self.last_finished = {k: float(v) for k, v in st.get("last_finished", {}).items()}
+                    self.current_label = st.get("label", "CC …")
+                except Exception:
+                    pass
 
             icon_theme_path = ensure_icons()
             self.indicator = AppIndicator3.Indicator.new(
@@ -713,7 +725,7 @@ def run_tray_app() -> int:
             )
             self.indicator.set_icon_theme_path(icon_theme_path)
             self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-            self.indicator.set_label("CC …", "CC …")
+            self.indicator.set_label(self.current_label, self.current_label)
 
             self.menu = Gtk.Menu()
             self.indicator.set_menu(self.menu)
@@ -778,11 +790,50 @@ def run_tray_app() -> int:
             self.last_status = {s.key: s.status for s in all_sessions}
             self.render_title()
             self.rebuild_menu()
+            self._ensure_leftmost()
             return False
 
         def render_title(self) -> None:
             t = render_compact_title(self.results, self.last_finished, self.config.maxWidth)
+            self.current_label = t
             self.indicator.set_label(t, t)
+
+        def _ensure_leftmost(self) -> None:
+            """
+            ubuntu-appindicators inserts each newly-registered StatusNotifierItem at index 1
+            (the leftmost tray slot), so whichever item is last in RegisteredStatusNotifierItems
+            is leftmost on screen. If another app (or screen unlock) registered after us,
+            re-exec preserving state so we reclaim the leftmost position.
+            """
+            if time.time() - self.start_time < 8.0:
+                return
+            try:
+                bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+                ret = bus.call_sync(
+                    "org.kde.StatusNotifierWatcher",
+                    "/StatusNotifierWatcher",
+                    "org.freedesktop.DBus.Properties",
+                    "Get",
+                    GLib.Variant("(ss)", ("org.kde.StatusNotifierWatcher", "RegisteredStatusNotifierItems")),
+                    GLib.VariantType("(v)"),
+                    Gio.DBusCallFlags.NONE,
+                    500,
+                    None,
+                )
+                items = list(ret.unpack()[0])
+                has_us = any(i.endswith("/cc_menubar") for i in items)
+                if has_us and items and not items[-1].endswith("/cc_menubar"):
+                    os.environ["CC_MENUBAR_STATE"] = json.dumps(
+                        {
+                            "last_status": self.last_status,
+                            "last_finished": self.last_finished,
+                            "label": self.current_label,
+                        }
+                    )
+                    lock_file.close()
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
+            except Exception:
+                pass
 
         def _make_item(
             self,
