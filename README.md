@@ -1,17 +1,20 @@
 # cc-menubar
 
-macOS menu bar monitor for running Claude Code sessions, on this Mac and on SSH servers.
+macOS and Linux menu bar monitor for running **Claude Code** and **Antigravity CLI (`agy`)** sessions, locally and on SSH servers.
 
-It reads Claude Code's session registry (`~/.claude/sessions/<pid>.json`, the same files
-Claude Code uses to track its own sessions) on every configured host. It's an internal format, so it may need a tweak
-after a Claude Code upgrade.
+It reads:
+- Claude Code's session registry (`~/.claude/sessions/<pid>.json`)
+- Antigravity CLI's active presence locks (`~/.gemini/antigravity-cli/presence/*.lock`), SQLite conversation summaries (`conversation_summaries.db`), and step transcripts (`transcript.jsonl`)
+
+on every configured host.
 
 ## Build / install
 
-    ./build.sh            # -> build/CCMenubar.app
-    ./build.sh --install  # copy to ~/Applications and launch
+    ./build.sh            # macOS -> build/CCMenubar.app | Linux -> build/cc-menubar
+    ./build.sh --install  # macOS -> ~/Applications/CCMenubar.app | Linux -> ~/.local/bin/cc-menubar + autostart
 
-Launch at login: System Settings → General → Login Items → add `~/Applications/CCMenubar.app`.
+- **macOS**: Launch at login via System Settings → General → Login Items → add `~/Applications/CCMenubar.app`.
+- **Linux (Ubuntu / GNOME AppIndicator)**: Uses `/usr/bin/python3` with `AyatanaAppIndicator3` + GTK3 (included out of the box on Ubuntu Desktop). `./build.sh --install` installs to `~/.local/share/cc-menubar`, links `~/.local/bin/cc-menubar`, adds `~/.config/autostart/cc-menubar.desktop`, and launches it in the top bar. You can also test from the terminal with `./cc-menubar.py --once`.
 
 ## Menu bar
 

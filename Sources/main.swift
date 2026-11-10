@@ -43,6 +43,7 @@ func loadConfig() -> Config {
 // Emits one line per live session: <session json>\t<tmux pane title>
 let collectScript = #"""
 PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin"
+hname=$(hostname 2>/dev/null || uname -n 2>/dev/null)
 for f in "$HOME"/.claude/sessions/*.json; do
   [ -e "$f" ] || continue
   pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$f")
@@ -51,9 +52,119 @@ for f in "$HOME"/.claude/sessions/*.json; do
   title=""
   if [ -n "$pane" ] && command -v tmux >/dev/null 2>&1; then
     title=$(tmux display-message -p -t "$pane" '#{pane_title}' 2>/dev/null)
+    [ "$title" = "$hname" ] && title=""
   fi
   printf '%s\t%s\n' "$(tr -d '\n\t' < "$f")" "$title"
 done
+# Antigravity CLI (agy) sessions (~/.gemini/antigravity-cli)
+if [ -d "$HOME/.gemini/antigravity-cli/presence" ] && command -v python3 >/dev/null 2>&1; then
+  python3 - <<'PYEOF' 2>/dev/null
+import datetime, glob, json, os, re, sqlite3, subprocess
+home = os.path.expanduser("~")
+agy_dir = os.path.join(home, ".gemini", "antigravity-cli")
+presence_dir = os.path.join(agy_dir, "presence")
+locks = {}
+if os.path.isdir("/proc"):
+    for fd in glob.glob("/proc/[0-9]*/fd/*"):
+        try:
+            target = os.readlink(fd)
+        except OSError:
+            continue
+        if target.startswith(presence_dir + "/") and target.endswith(".lock"):
+            try:
+                pid = int(fd.split("/")[2])
+            except ValueError:
+                continue
+            cid = os.path.basename(target)[:-5]
+            comm = ""
+            try:
+                comm = open(f"/proc/{pid}/comm", "r", encoding="utf-8", errors="ignore").read().strip()
+            except OSError:
+                pass
+            prev = locks.get(cid)
+            if prev is None or (comm == "agy" and prev[1] != "agy") or (comm == prev[1] and pid < prev[0]):
+                locks[cid] = (pid, comm)
+else:
+    try:
+        out = subprocess.check_output(["lsof", "-F", "pcn", "--"] + glob.glob(os.path.join(presence_dir, "*.lock")), stderr=subprocess.DEVNULL, text=True)
+        cur_pid, cur_comm = None, ""
+        for line in out.splitlines():
+            if line.startswith("p"): cur_pid = int(line[1:])
+            elif line.startswith("c"): cur_comm = line[1:]
+            elif line.startswith("n") and line.endswith(".lock") and cur_pid:
+                cid = os.path.basename(line[1:])[:-5]
+                prev = locks.get(cid)
+                if prev is None or (cur_comm == "agy" and prev[1] != "agy"):
+                    locks[cid] = (cur_pid, cur_comm)
+    except Exception:
+        pass
+if not locks:
+    raise SystemExit(0)
+db_rows = {}
+db_path = os.path.join(agy_dir, "conversation_summaries.db")
+if os.path.isfile(db_path):
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        for row in conn.execute("SELECT conversation_id, title, status, not_fully_idle, last_modified_time, last_user_input_time, workspace_uris FROM conversation_summaries"):
+            db_rows[row[0]] = row[1:]
+        conn.close()
+    except Exception:
+        pass
+def parse_iso_ms(s):
+    if not s or s.startswith("0001-01-01"): return None
+    try:
+        s = s.strip().replace(" ", "T")
+        if s.endswith("Z"): s = s[:-1] + "+00:00"
+        m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?([+-]\d{2}:\d{2})?$", s)
+        if m:
+            base, frac, tz = m.group(1), (m.group(2) or "")[:6].ljust(6, "0"), m.group(3) or "+00:00"
+            return int(datetime.datetime.fromisoformat(f"{base}.{frac}{tz}").timestamp() * 1000)
+    except Exception:
+        pass
+    return None
+for cid, (pid, _) in locks.items():
+    cwd, pane = "", None
+    try: cwd = os.readlink(f"/proc/{pid}/cwd")
+    except OSError: pass
+    try:
+        for item in open(f"/proc/{pid}/environ", "rb").read().split(b"\0"):
+            if item.startswith(b"TMUX_PANE="):
+                pane = item.split(b"=", 1)[1].decode("utf-8", "ignore"); break
+    except OSError: pass
+    title, db_status, not_idle, mod_time, input_time, ws_uris = db_rows.get(cid, ("", "CASCADE_RUN_STATUS_IDLE", 0, "", "", "[]"))
+    if not cwd:
+        try:
+            uris = json.loads(ws_uris)
+            if uris and uris[0].startswith("file://"): cwd = uris[0][7:]
+        except Exception: pass
+    status = "busy" if (db_status in ("CASCADE_RUN_STATUS_RUNNING", "CASCADE_RUN_STATUS_BUSY", "CASCADE_RUN_STATUS_CANCELING") or not_idle) else "idle"
+    status_ts = parse_iso_ms(input_time if status == "busy" else mod_time) or parse_iso_ms(mod_time)
+    tpath = os.path.join(agy_dir, "brain", cid, ".system_generated", "logs", "transcript.jsonl")
+    if os.path.isfile(tpath):
+        try:
+            with open(tpath, "rb") as tf:
+                tf.seek(0, os.SEEK_END)
+                tf.seek(max(0, tf.tell() - 32768))
+                lines = [ln for ln in tf.read().splitlines() if ln.strip()]
+            if lines:
+                last_step = json.loads(lines[-1])
+                if last_step.get("status", "") in ("WAITING", "CORTEX_STEP_STATUS_WAITING"):
+                    status = "waiting"
+                    status_ts = parse_iso_ms(last_step.get("created_at")) or status_ts
+                elif status == "busy":
+                    for raw in reversed(lines):
+                        step = json.loads(raw)
+                        if step.get("type") == "USER_INPUT":
+                            status_ts = parse_iso_ms(step.get("created_at")) or status_ts; break
+        except Exception: pass
+    if not status_ts:
+        try: status_ts = int(os.path.getmtime(os.path.join(presence_dir, f"{cid}.lock")) * 1000)
+        except OSError: status_ts = int(datetime.datetime.now().timestamp() * 1000)
+    name = os.path.basename(cwd.rstrip("/")) if cwd and cwd != home else ("~" if cwd == home else cid[:8])
+    obj = {"pid": pid, "sessionId": cid, "name": name, "status": status, "tmux": pane, "cwd": cwd, "statusUpdatedAt": status_ts, "entrypoint": "agy"}
+    print(f"{json.dumps(obj, separators=(',', ':'))}\t{(title or '').replace(chr(10), ' ').replace(chr(9), ' ').strip()}")
+PYEOF
+fi
 # Usage limits saved by statusline.sh (cc-menubar), with the file's mtime.
 u="$HOME/.cache/cc-menubar/usage.json"
 if [ -f "$u" ]; then printf 'USAGE\t%s\t%s\n' "$(date -r "$u" +%s)" "$(tr -d '\n\t' < "$u")"; fi
@@ -276,7 +387,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for s in all where s.status == "idle" && color(for: lastStatus[s.key] ?? "idle") == .systemOrange {
             lastFinished[s.host] = s.statusSince ?? Date()
             if config.notify ?? true {
-                notify(title: "Claude finished: \(s.name)", body: "\(s.host) · \(s.title.isEmpty ? shortPath(s.cwd) : s.title)")
+                let who = s.entrypoint == "agy" ? "Antigravity" : "Claude"
+                notify(title: "\(who) finished: \(s.name)", body: "\(s.host) · \(s.title.isEmpty ? shortPath(s.cwd) : s.title)")
             }
         }
         lastStatus = Dictionary(all.map { ($0.key, $0.status) }, uniquingKeysWith: { a, _ in a })
@@ -521,7 +633,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let s = sender.representedObject as? Session else { return }
         guard let pane = s.pane else {
             // No tmux pane (e.g. desktop app session): copy a resume command instead.
-            var cmd = "cd \(shQuote(s.cwd)) && claude --resume \(s.sessionId)"
+            let resume = s.entrypoint == "agy" ? "agy --conversation \(s.sessionId)" : "claude --resume \(s.sessionId)"
+            var cmd = "cd \(shQuote(s.cwd)) && \(resume)"
             if let dest = s.ssh { cmd = "ssh -t \(dest) \(shQuote(cmd))" }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cmd, forType: .string)
