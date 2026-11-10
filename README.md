@@ -24,7 +24,7 @@ Your 5-hour and weekly usage come first, then one segment per host, in config or
   long it has been working, longest-running first.
 - Green: idle. `✓2m` is the time since a session on that host last finished; it shows for an hour.
 - If everything doesn't fit in `maxWidth` (default 600 points), the title is shortened step by step:
-  shorter names, then working sessions as `●2 19m` (count and longest time), then counts only.
+  shorter names, then working sessions without names (`● 19m ● 1m`), then counts only.
   Raise `maxWidth` in the config if you have room; macOS hides a menu bar item that doesn't fit.
 - Times are cyan. `host 0` means the host has no sessions; `host ⚠︎` means it couldn't be reached.
 

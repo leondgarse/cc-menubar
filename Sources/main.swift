@@ -262,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.button?.attributedTitle = t
     }
 
-    /// level 0: full · 1: shorter names, tighter gaps · 2: working sessions as "●N time" · 3: counts only.
+    /// level 0: full · 1: shorter names, tighter gaps · 2: working sessions as "● time" without names · 3: counts only.
     func buildTitle(_ r: [HostResult], level: Int) -> NSAttributedString {
         let t = NSMutableAttributedString()
         let nameLen = level == 0 ? 20 : 12
@@ -300,13 +300,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let group = h.sessions.filter { color(for: $0.status) == c }
                     if group.isEmpty { continue }
                     if !first { t.append(NSAttributedString(string: "  ")) }
-                    if c == .systemOrange && level < 2 {
-                        // Working sessions are listed one by one: "● name 4m  ● other 1m", longest-running first.
+                    if c == .systemOrange && level < 3 {
+                        // Working sessions are listed one by one, longest-running first:
+                        // "● name 4m  ● other 1m", or at level 2 without names: "● 4m ● 1m".
                         let sorted = group.sorted { ($0.statusSince ?? .distantFuture) < ($1.statusSince ?? .distantFuture) }
                         for (k, s) in sorted.enumerated() {
-                            if k > 0 { t.append(NSAttributedString(string: "  ")) }
-                            t.append(NSAttributedString(string: "● ", attributes: [.foregroundColor: c]))
-                            t.append(NSAttributedString(string: clip(s.name)))
+                            if k > 0 { t.append(NSAttributedString(string: level < 2 ? "  " : " ")) }
+                            t.append(NSAttributedString(string: "●", attributes: [.foregroundColor: c]))
+                            if level < 2 { t.append(NSAttributedString(string: " " + clip(s.name))) }
                             let since = ago(s.statusSince)
                             if !since.isEmpty { t.append(NSAttributedString(string: " " + since, attributes: timeAttr)) }
                         }
