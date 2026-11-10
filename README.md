@@ -49,3 +49,7 @@ You get a notification when a session goes from working to idle.
 (BatchMode). The remote only needs `sh`, `sed` and `tr` (no jq). Connections are reused through an SSH
 ControlMaster socket (`/tmp/cc-menubar-*`), so polling every few seconds stays cheap.
 After editing, use **Reload config** in the menu.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
