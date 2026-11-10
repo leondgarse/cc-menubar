@@ -353,7 +353,9 @@ def status_category(status: str) -> str:
     return "orange"
 
 
-def status_dot(cat: str) -> str:
+def status_dot(cat: str, entrypoint: str = "") -> str:
+    if entrypoint == "agy":
+        return {"red": "🟥", "orange": "🟧", "green": "🟩"}.get(cat, "🟧")
     return {"red": "🔴", "orange": "🟠", "green": "🟢"}.get(cat, "🟠")
 
 
@@ -524,12 +526,11 @@ def build_title(
                 group = [s for s in h.sessions if status_category(s.status) == cat]
                 if not group:
                     continue
-                dot = status_dot(cat)
                 if cat == "orange" and level < 3:
                     sorted_g = sorted(group, key=lambda s: s.statusSince if s.statusSince is not None else float("inf"))
                     items: List[str] = []
                     for s in sorted_g:
-                        piece = dot
+                        piece = status_dot(cat, s.entrypoint)
                         if level < 2:
                             piece += f" {clip(s.name)}"
                         since = ago(s.statusSince)
@@ -540,7 +541,15 @@ def build_title(
                     groups_out.append(sep.join(items))
                     continue
 
-                piece = f"{dot}{len(group)}"
+                cc_sub = [s for s in group if s.entrypoint != "agy"]
+                agy_sub = [s for s in group if s.entrypoint == "agy"]
+                counts_tokens: List[str] = []
+                if cc_sub:
+                    counts_tokens.append(f"{status_dot(cat, '')}{len(cc_sub)}")
+                if agy_sub:
+                    counts_tokens.append(f"{status_dot(cat, 'agy')}{len(agy_sub)}")
+                piece = " ".join(counts_tokens)
+
                 oldest = min(group, key=lambda s: s.statusSince if s.statusSince is not None else float("inf"))
                 if level >= 3:
                     pass
@@ -634,7 +643,7 @@ def run_once_cli() -> int:
             continue
         print(f"{hdr} {len(r.sessions)} session(s):")
         for s in r.sessions:
-            dot = status_dot(status_category(s.status))
+            dot = status_dot(status_category(s.status), s.entrypoint)
             kind = "agy" if s.entrypoint == "agy" else "claude"
             print(
                 f"  {dot} {s.name:<20} {s.status:<8} {ago(s.statusSince):<5} "
@@ -813,7 +822,7 @@ def run_tray_app() -> int:
                                 break
                     last_host = s.host
 
-                dot = status_dot(status_category(s.status))
+                dot = status_dot(status_category(s.status), s.entrypoint)
                 title = "" if s.title in ("", "Claude Code") else clip(s.title, 44)
                 age_str = f"{s.status} {ago(s.statusSince)}".strip()
                 tag = "agy" if s.entrypoint == "agy" else "cc"

@@ -22,10 +22,11 @@ Your 5-hour and weekly usage come first, then one segment per host, in config or
 
     5h 59%  wk 49%     local ●1 my-session  ● task-monitor 4m  ●3 ✓2m     gpu-box ● train-run 12m  ● eval 3m  ●1
 
+- **Circles (`🔴`/`🟠`/`🟢` on Linux, `●` on macOS)** are Claude Code sessions; **Squares (`🟥`/`🟧`/`🟩` on Linux, `■` on macOS)** are Antigravity CLI (`agy`) sessions.
 - Red: waiting for input. Shows the longest-waiting session's name in red, plus `+N` if more are waiting.
 - Orange: working (`busy`, `shell`, …). Each working session is shown separately with its name and how
   long it has been working, longest-running first.
-- Green: idle. `✓2m` is the time since a session on that host last finished; it shows for an hour.
+- Green: idle (split by tool when both are running, e.g. `🟢1 🟩2`). `✓2m` is the time since a session on that host last finished; it shows for an hour.
 - If everything doesn't fit in `maxWidth` (default 600 points), the title is shortened step by step:
   shorter names, then working sessions without names (`● 19m ● 1m`), then counts only.
   Raise `maxWidth` in the config if you have room; macOS hides a menu bar item that doesn't fit.

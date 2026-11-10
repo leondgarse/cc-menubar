@@ -457,11 +457,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if !first { t.append(NSAttributedString(string: "  ")) }
                     if c == .systemOrange && level < 3 {
                         // Working sessions are listed one by one, longest-running first:
-                        // "● name 4m  ● other 1m", or at level 2 without names: "● 4m ● 1m".
+                        // "● name 4m  ■ other 1m", or at level 2 without names: "● 4m ■ 1m".
                         let sorted = group.sorted { ($0.statusSince ?? .distantFuture) < ($1.statusSince ?? .distantFuture) }
                         for (k, s) in sorted.enumerated() {
                             if k > 0 { t.append(NSAttributedString(string: level < 2 ? "  " : " ")) }
-                            t.append(NSAttributedString(string: "●", attributes: [.foregroundColor: c]))
+                            let sym = s.entrypoint == "agy" ? "■" : "●"
+                            t.append(NSAttributedString(string: sym, attributes: [.foregroundColor: c]))
                             if level < 2 { t.append(NSAttributedString(string: " " + clip(s.name))) }
                             let since = ago(s.statusSince)
                             if !since.isEmpty { t.append(NSAttributedString(string: " " + since, attributes: timeAttr)) }
@@ -469,8 +470,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         first = false
                         continue
                     }
-                    t.append(NSAttributedString(string: "●", attributes: [.foregroundColor: c]))
-                    t.append(NSAttributedString(string: "\(group.count)"))
+                    let ccSub = group.filter { $0.entrypoint != "agy" }
+                    let agySub = group.filter { $0.entrypoint == "agy" }
+                    if !ccSub.isEmpty {
+                        t.append(NSAttributedString(string: "●", attributes: [.foregroundColor: c]))
+                        t.append(NSAttributedString(string: "\(ccSub.count)"))
+                    }
+                    if !agySub.isEmpty {
+                        if !ccSub.isEmpty { t.append(NSAttributedString(string: " ")) }
+                        t.append(NSAttributedString(string: "■", attributes: [.foregroundColor: c]))
+                        t.append(NSAttributedString(string: "\(agySub.count)"))
+                    }
                     // Oldest status change first: the longest-waiting / longest-running session.
                     let oldest = group.min { ($0.statusSince ?? .distantFuture) < ($1.statusSince ?? .distantFuture) }!
                     if level >= 3 {
@@ -528,7 +538,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Columns: ● name | status age | title | cwd
         let rows: [[(String, NSFont, NSColor)]] = all.map { s in
             let title = (s.title.isEmpty || s.title == "Claude Code") ? "" : s.title
-            return [("● ", nameFont, color(for: s.status)),
+            let sym = s.entrypoint == "agy" ? "■ " : "● "
+            return [(sym, nameFont, color(for: s.status)),
                     (clip(s.name, 36), nameFont, .labelColor),
                     ("\(s.status) \(ago(s.statusSince))", small, dim),
                     (clip(title, 48), small, .labelColor),
