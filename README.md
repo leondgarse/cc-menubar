@@ -39,8 +39,11 @@ Claude Code passes your subscription usage to status line scripts. `statusline.s
 `~/.cache/cc-menubar/usage.json` for the app and prints `5h 59% · wk 49%` as your status line.
 Percentages are cyan, orange from 70% and red from 90%; the dropdown shows when each window resets.
 
+The dropdown offers **Enable usage tracking on <host>…** for every host that isn't set up yet, and does
+it after you confirm. Or from a shell:
+
     ./install-statusline.sh              # this Mac
-    ./install-statusline.sh <ssh-dest>   # each server (needs jq there)
+    ./install-statusline.sh <ssh-dest>   # a server (needs jq or python3 there)
 
 This sets `statusLine` in `~/.claude/settings.json` (backup saved as `settings.json.bak-cc-menubar`)
 and leaves an existing, different status line alone.

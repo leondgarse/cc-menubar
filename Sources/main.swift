@@ -57,6 +57,11 @@ done
 # Usage limits saved by statusline.sh (cc-menubar), with the file's mtime.
 u="$HOME/.cache/cc-menubar/usage.json"
 if [ -f "$u" ]; then printf 'USAGE\t%s\t%s\n' "$(date -r "$u" +%s)" "$(tr -d '\n\t' < "$u")"; fi
+# Is the cc-menubar status line hook set up here? installed / other (a different status line) / none
+s="$HOME/.claude/settings.json"
+if grep -q 'cc-menubar-statusline' "$s" 2>/dev/null; then h=installed
+elif grep -q '"statusLine"' "$s" 2>/dev/null; then h=other; else h=none; fi
+printf 'HOOK\t%s\n' "$h"
 """#
 
 struct Session {
@@ -78,6 +83,7 @@ struct HostResult {
     var sessions: [Session] = []
     var error: String?
     var usage: (json: Data, time: Date)?   // this host's ~/.cache/cc-menubar/usage.json
+    var hook: String?                       // status line hook: installed / other / none
 }
 
 let sshOpts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
@@ -85,12 +91,13 @@ let sshOpts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
                "-o", "ControlPersist=600"]
 
 /// Runs a process with optional stdin, killing it after `timeout` seconds.
-func run(_ exe: String, _ args: [String], stdin: String? = nil, timeout: Double = 15) -> (Int32, String, String) {
+func run(_ exe: String, _ args: [String], stdin: String? = nil, timeout: Double = 15, env extra: [String: String] = [:]) -> (Int32, String, String) {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: exe)
     p.arguments = args
     var env = ProcessInfo.processInfo.environment
     env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    env.merge(extra) { _, new in new }
     p.environment = env
     let out = Pipe(), err = Pipe(), inp = Pipe()
     p.standardOutput = out; p.standardError = err; p.standardInput = inp
@@ -119,6 +126,7 @@ func collect(_ host: HostConfig) -> HostResult {
         return res
     }
     for line in out.split(separator: "\n") {
+        if line.hasPrefix("HOOK\t") { res.hook = String(line.dropFirst(5)); continue }
         if line.hasPrefix("USAGE\t") {
             let u = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
             if u.count == 3, let ts = Double(u[1]), let d = String(u[2]).data(using: .utf8) {
@@ -481,8 +489,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(ui)
             }
         } else {
-            let ui = NSMenuItem(title: "No usage data yet: install statusline.sh (see README)", action: nil, keyEquivalent: "")
-            menu.addItem(ui)
+            menu.addItem(NSMenuItem(title: "No usage data yet", action: nil, keyEquivalent: ""))
+        }
+        // Offer to set up the status line hook (the source of usage data) where it's missing.
+        let missing = results.filter { $0.error == nil && $0.hook == "none" }
+        for r in missing {
+            let mi = NSMenuItem(title: "Enable usage tracking on \(r.host.name)…", action: #selector(enableUsage(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = [r.host.name]
+            menu.addItem(mi)
+        }
+        if missing.count > 1 {
+            let mi = NSMenuItem(title: "Enable usage tracking on all \(missing.count) hosts…", action: #selector(enableUsage(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = missing.map { $0.host.name }
+            menu.addItem(mi)
+        }
+        for r in results where r.hook == "other" {
+            let mi = NSMenuItem(title: "\(r.host.name): has its own status line, usage not tracked", action: nil, keyEquivalent: "")
+            mi.toolTip = "cc-menubar won't replace an existing statusLine in ~/.claude/settings.json."
+            menu.addItem(mi)
         }
         menu.addItem(.separator())
         let refresh = NSMenuItem(title: "Refresh now", action: #selector(refreshNow), keyEquivalent: "r")
@@ -519,6 +545,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func refreshNow() { poll() }
+
+    /// Installs the bundled statusline.sh as Claude Code's status line on the given hosts, after asking.
+    @objc func enableUsage(_ sender: NSMenuItem) {
+        guard let names = sender.representedObject as? [String],
+              let installer = Bundle.main.path(forResource: "install-statusline", ofType: "sh") else { return }
+        let hosts = config.hosts.filter { names.contains($0.name) }
+        let alert = NSAlert()
+        alert.messageText = "Enable usage tracking on \(names.joined(separator: ", "))?"
+        alert.informativeText = """
+            Claude Code only reports 5-hour and weekly usage to status line scripts. This will:
+            • copy a small script to ~/.claude/cc-menubar-statusline.sh
+            • set "statusLine" in ~/.claude/settings.json to run it (a backup is saved as settings.json.bak-cc-menubar)
+
+            Sessions will show "5h 59% · wk 49%" as their status line. An existing status line is never replaced.
+            """
+        alert.addButton(withTitle: "Enable")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let opts = sshOpts.joined(separator: " ")
+        DispatchQueue.global().async {
+            let lines = hosts.map { h -> String in
+                let (code, out, err) = run("/bin/sh", [installer] + (h.ssh.map { [$0] } ?? []),
+                                           timeout: 30, env: ["SSH_OPTS": opts])
+                let msg = (out + err).trimmingCharacters(in: .whitespacesAndNewlines)
+                return "\(h.name): " + (msg.isEmpty ? "exit \(code)" : msg)
+            }
+            DispatchQueue.main.async {
+                let done = NSAlert()
+                done.messageText = "Usage tracking"
+                done.informativeText = lines.joined(separator: "\n\n")
+                    + "\n\nUsage appears after a session on that host next gets a reply."
+                NSApp.activate(ignoringOtherApps: true)
+                done.runModal()
+                self.poll()
+            }
+        }
+    }
 
     @objc func editConfig() {
         _ = loadConfig() // ensures the file exists

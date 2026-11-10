@@ -19,6 +19,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict></plist>
 EOF
+mkdir -p "$APP/Contents/Resources"
+cp statusline.sh install-statusline.sh "$APP/Contents/Resources/"
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 echo "Built $APP"
 if [ "$1" = "--install" ]; then
