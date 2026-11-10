@@ -353,9 +353,7 @@ def status_category(status: str) -> str:
     return "orange"
 
 
-def status_dot(cat: str, entrypoint: str = "") -> str:
-    if entrypoint == "agy":
-        return {"red": "🟥", "orange": "🟧", "green": "🟩"}.get(cat, "🟧")
+def status_dot(cat: str) -> str:
     return {"red": "🔴", "orange": "🟠", "green": "🟢"}.get(cat, "🟠")
 
 
@@ -485,12 +483,14 @@ def read_usage(
     return win("five_hour"), win("seven_day"), best_ts, best_src
 
 
-def build_title(
+def build_tool_title(
     results: List[HostResult],
     last_finished: Dict[str, float],
+    tool: str,
     level: int = 0,
 ) -> str:
     """
+    Build top-bar title for a specific tool ('cc' or 'agy').
     level 0: full
     level 1: shorter names, tighter gaps
     level 2: working sessions as '🟠 time' without names
@@ -503,34 +503,39 @@ def build_title(
     def clip(s: str) -> str:
         return (s[: name_len - 1] + "…") if len(s) > name_len else s
 
-    five_h, weekly, updated, _ = read_usage(results)
-    if updated is not None or any(r.hook == "installed" for r in results):
-        u_parts = []
-        for label, w in (("5h", five_h), ("wk", weekly)):
-            pct = int(w.pct) if w else 0
-            u_parts.append(f"{label} {pct}%")
-        parts.append("  ".join(u_parts))
-        parts.append(host_gap)
+    if tool == "cc":
+        five_h, weekly, updated, _ = read_usage(results)
+        if updated is not None or any(r.hook == "installed" for r in results):
+            u_parts = []
+            for label, w in (("5h", five_h), ("wk", weekly)):
+                pct = int(w.pct) if w else 0
+                u_parts.append(f"{label} {pct}%")
+            parts.append("  ".join(u_parts))
+            parts.append(host_gap)
 
     host_segments: List[str] = []
     now = time.time()
     for h in results:
         seg = f"{h.host.name} "
+        tool_sessions = [
+            s for s in h.sessions if (s.entrypoint == "agy") == (tool == "agy")
+        ]
         if h.error is not None:
             seg += "⚠"
-        elif not h.sessions:
+        elif not tool_sessions:
             seg += "0"
         else:
             groups_out: List[str] = []
             for cat in ("red", "orange", "green"):
-                group = [s for s in h.sessions if status_category(s.status) == cat]
+                group = [s for s in tool_sessions if status_category(s.status) == cat]
                 if not group:
                     continue
+                dot = status_dot(cat)
                 if cat == "orange" and level < 3:
                     sorted_g = sorted(group, key=lambda s: s.statusSince if s.statusSince is not None else float("inf"))
                     items: List[str] = []
                     for s in sorted_g:
-                        piece = status_dot(cat, s.entrypoint)
+                        piece = dot
                         if level < 2:
                             piece += f" {clip(s.name)}"
                         since = ago(s.statusSince)
@@ -541,15 +546,7 @@ def build_title(
                     groups_out.append(sep.join(items))
                     continue
 
-                cc_sub = [s for s in group if s.entrypoint != "agy"]
-                agy_sub = [s for s in group if s.entrypoint == "agy"]
-                counts_tokens: List[str] = []
-                if cc_sub:
-                    counts_tokens.append(f"{status_dot(cat, '')}{len(cc_sub)}")
-                if agy_sub:
-                    counts_tokens.append(f"{status_dot(cat, 'agy')}{len(agy_sub)}")
-                piece = " ".join(counts_tokens)
-
+                piece = f"{dot}{len(group)}"
                 oldest = min(group, key=lambda s: s.statusSince if s.statusSince is not None else float("inf"))
                 if level >= 3:
                     pass
@@ -562,7 +559,7 @@ def build_title(
                     if len(group) > 1:
                         piece += f" +{len(group) - 1}"
                 elif cat == "green":
-                    done = last_finished.get(h.host.name)
+                    done = last_finished.get(f"{tool}:{h.host.name}")
                     if done is not None and (now - done) < 3600:
                         piece += f" ✓{ago(done)}"
                 groups_out.append(piece)
@@ -577,39 +574,32 @@ def render_compact_title(
     results: List[HostResult],
     last_finished: Dict[str, float],
     max_width: float,
+    tool: str = "cc",
 ) -> str:
     # Approximate 1 character ~ 7.5 points in top bar font
     max_chars = max(24, int(max_width / 7.5))
-    t = build_title(results, last_finished, level=0)
+    t = build_tool_title(results, last_finished, tool=tool, level=0)
     for lvl in (1, 2, 3):
         if len(t) > max_chars:
-            t = build_title(results, last_finished, level=lvl)
+            t = build_tool_title(results, last_finished, tool=tool, level=lvl)
     return t
 
 
 def ensure_icons() -> str:
     """
-    Create the small red/terracotta Claude Code pixel mascot SVG icon:
-     ▐▛███▛█
-    ▝▜██████▀
-     ▝▝   ▝▝
+    Create small SVG icons for Claude Code ('cc-menubar-clawd.svg') and
+    Antigravity CLI ('cc-menubar-agy.svg').
     """
     ICON_DIR.mkdir(parents=True, exist_ok=True)
-    # Exact subpixel bitmap from the 3-row block art (width 17, height 5, each row 2u tall in 18x16 viewBox)
-    svg = (
+    clawd_svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 18 16">'
         '<g fill="#E05A47">'
-        # y=0 (top of head): x=3..15
         '<rect x="3" y="3" width="13" height="2"/>'
-        # y=1 (eyes row): x=3..4, x=6..12, x=14..15 (eyes at x=5 and x=13)
         '<rect x="3" y="5" width="2" height="2"/>'
         '<rect x="6" y="5" width="7" height="2"/>'
         '<rect x="14" y="5" width="2" height="2"/>'
-        # y=2 (body + arms): x=1..17
         '<rect x="1" y="7" width="17" height="2"/>'
-        # y=3 (lower torso): x=3..15
         '<rect x="3" y="9" width="13" height="2"/>'
-        # y=4 (four legs): x=3, x=5, x=13, x=15
         '<rect x="3" y="11" width="1.3" height="2.2"/>'
         '<rect x="5" y="11" width="1.3" height="2.2"/>'
         '<rect x="13" y="11" width="1.3" height="2.2"/>'
@@ -617,8 +607,22 @@ def ensure_icons() -> str:
         "</g>"
         "</svg>\n"
     )
-    icon_file = ICON_DIR / "cc-menubar-clawd.svg"
-    icon_file.write_text(svg, encoding="utf-8")
+    (ICON_DIR / "cc-menubar-clawd.svg").write_text(clawd_svg, encoding="utf-8")
+
+    agy_svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+        "<defs>"
+        '<linearGradient id="agyGrad" x1="2" y1="2" x2="13" y2="14" gradientUnits="userSpaceOnUse">'
+        '<stop offset="0%" stop-color="#FABB05"/>'
+        '<stop offset="28%" stop-color="#EA4335"/>'
+        '<stop offset="58%" stop-color="#34A853"/>'
+        '<stop offset="85%" stop-color="#2B86FF"/>'
+        "</linearGradient>"
+        "</defs>"
+        '<path fill="url(#agyGrad)" d="M8 1.8 C6.1 1.8 4.9 4.5 3.4 8.6 C2.3 11.5 1.4 13.1 2.0 13.8 C2.6 14.4 3.8 13.4 5.1 11.3 C6.2 9.4 7.0 8.3 8.0 8.3 C9.0 8.3 9.8 9.4 10.9 11.3 C12.2 13.4 13.4 14.4 14.0 13.8 C14.6 13.1 13.7 11.5 12.6 8.6 C11.1 4.5 9.9 1.8 8 1.8 Z"/>'
+        "</svg>\n"
+    )
+    (ICON_DIR / "cc-menubar-agy.svg").write_text(agy_svg, encoding="utf-8")
     return str(ICON_DIR)
 
 
@@ -655,8 +659,9 @@ def run_once_cli() -> int:
     cfg = load_config()
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(cfg.hosts))) as pool:
         results = list(pool.map(collect, cfg.hosts))
-    title = render_compact_title(results, {}, cfg.maxWidth)
-    print(f"Top bar: {title}\n")
+    cc_title = render_compact_title(results, {}, cfg.maxWidth, tool="cc")
+    agy_title = render_compact_title(results, {}, cfg.maxWidth, tool="agy")
+    print(f"Top bar: [CC] {cc_title}   [AGY] {agy_title}\n")
     for r in results:
         hdr = f"[{r.host.name}]"
         if r.error:
@@ -664,7 +669,7 @@ def run_once_cli() -> int:
             continue
         print(f"{hdr} {len(r.sessions)} session(s):")
         for s in r.sessions:
-            dot = status_dot(status_category(s.status), s.entrypoint)
+            dot = status_dot(status_category(s.status))
             kind = "agy" if s.entrypoint == "agy" else "claude"
             print(
                 f"  {dot} {s.name:<20} {s.status:<8} {ago(s.statusSince):<5} "
@@ -701,7 +706,8 @@ def run_tray_app() -> int:
             self.results: List[HostResult] = []
             self.last_status: Dict[str, str] = {}
             self.last_finished: Dict[str, float] = {}
-            self.current_label: str = "CC …"
+            self.cc_label: str = "CC …"
+            self.agy_label: str = "AGY …"
             self.start_time: float = time.time()
             self.polling = False
             self.poll_timer_id: Optional[int] = None
@@ -713,22 +719,34 @@ def run_tray_app() -> int:
                     st = json.loads(saved_state)
                     self.last_status = st.get("last_status", {})
                     self.last_finished = {k: float(v) for k, v in st.get("last_finished", {}).items()}
-                    self.current_label = st.get("label", "CC …")
+                    self.cc_label = st.get("cc_label", "CC …")
+                    self.agy_label = st.get("agy_label", "AGY …")
                 except Exception:
                     pass
 
             icon_theme_path = ensure_icons()
-            self.indicator = AppIndicator3.Indicator.new(
-                "cc-menubar",
+            # Register AGY first and CC second so CC is at index 1 (leftmost) and AGY is right next to it
+            self.indicator_agy = AppIndicator3.Indicator.new(
+                "cc-menubar-agy",
+                "cc-menubar-agy",
+                AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
+            )
+            self.indicator_agy.set_icon_theme_path(icon_theme_path)
+            self.indicator_agy.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+            self.indicator_agy.set_label(self.agy_label, self.agy_label)
+            self.menu_agy = Gtk.Menu()
+            self.indicator_agy.set_menu(self.menu_agy)
+
+            self.indicator_cc = AppIndicator3.Indicator.new(
+                "cc-menubar-cc",
                 "cc-menubar-clawd",
                 AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
             )
-            self.indicator.set_icon_theme_path(icon_theme_path)
-            self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-            self.indicator.set_label(self.current_label, self.current_label)
-
-            self.menu = Gtk.Menu()
-            self.indicator.set_menu(self.menu)
+            self.indicator_cc.set_icon_theme_path(icon_theme_path)
+            self.indicator_cc.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+            self.indicator_cc.set_label(self.cc_label, self.cc_label)
+            self.menu_cc = Gtk.Menu()
+            self.indicator_cc.set_menu(self.menu_cc)
 
             self.start_timers()
             self.poll()
@@ -781,7 +799,8 @@ def run_tray_app() -> int:
             for s in all_sessions:
                 prev_cat = status_category(self.last_status.get(s.key, "idle"))
                 if s.status == "idle" and prev_cat == "orange":
-                    self.last_finished[s.host] = s.statusSince or time.time()
+                    tool_key = "agy" if s.entrypoint == "agy" else "cc"
+                    self.last_finished[f"{tool_key}:{s.host}"] = s.statusSince or time.time()
                     if self.config.notify:
                         agent_label = "Antigravity" if s.entrypoint == "agy" else "Claude"
                         body = f"{s.host} · {s.title if s.title else short_path(s.cwd)}"
@@ -789,21 +808,24 @@ def run_tray_app() -> int:
 
             self.last_status = {s.key: s.status for s in all_sessions}
             self.render_title()
-            self.rebuild_menu()
+            self.rebuild_menu(self.menu_cc)
+            self.rebuild_menu(self.menu_agy)
             self._ensure_leftmost()
             return False
 
         def render_title(self) -> None:
-            t = render_compact_title(self.results, self.last_finished, self.config.maxWidth)
-            self.current_label = t
-            self.indicator.set_label(t, t)
+            half_w = max(220.0, self.config.maxWidth / 2.0)
+            self.cc_label = render_compact_title(self.results, self.last_finished, half_w, tool="cc")
+            self.agy_label = render_compact_title(self.results, self.last_finished, half_w, tool="agy")
+            self.indicator_cc.set_label(self.cc_label, self.cc_label)
+            self.indicator_agy.set_label(self.agy_label, self.agy_label)
 
         def _ensure_leftmost(self) -> None:
             """
             ubuntu-appindicators inserts each newly-registered StatusNotifierItem at index 1
-            (the leftmost tray slot), so whichever item is last in RegisteredStatusNotifierItems
-            is leftmost on screen. If another app (or screen unlock) registered after us,
-            re-exec preserving state so we reclaim the leftmost position.
+            (the leftmost tray slot). Since we register AGY then CC, the end of
+            RegisteredStatusNotifierItems should be [..., '.../cc_menubar_agy', '.../cc_menubar_cc']
+            so on screen from left to right it reads: [CC icon] ... [AGY icon] ...
             """
             if time.time() - self.start_time < 8.0:
                 return
@@ -821,17 +843,20 @@ def run_tray_app() -> int:
                     None,
                 )
                 items = list(ret.unpack()[0])
-                has_us = any(i.endswith("/cc_menubar") for i in items)
-                if has_us and items and not items[-1].endswith("/cc_menubar"):
-                    os.environ["CC_MENUBAR_STATE"] = json.dumps(
-                        {
-                            "last_status": self.last_status,
-                            "last_finished": self.last_finished,
-                            "label": self.current_label,
-                        }
-                    )
-                    lock_file.close()
-                    os.execv(sys.executable, [sys.executable] + sys.argv)
+                has_cc = any(i.endswith("/cc_menubar_cc") for i in items)
+                has_agy = any(i.endswith("/cc_menubar_agy") for i in items)
+                if has_cc and has_agy and len(items) >= 2:
+                    if not (items[-2].endswith("/cc_menubar_agy") and items[-1].endswith("/cc_menubar_cc")):
+                        os.environ["CC_MENUBAR_STATE"] = json.dumps(
+                            {
+                                "last_status": self.last_status,
+                                "last_finished": self.last_finished,
+                                "cc_label": self.cc_label,
+                                "agy_label": self.agy_label,
+                            }
+                        )
+                        lock_file.close()
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
             except Exception:
                 pass
 
@@ -852,9 +877,9 @@ def run_tray_app() -> int:
                     item.connect("activate", callback)
             return item
 
-        def rebuild_menu(self) -> None:
-            for child in self.menu.get_children():
-                self.menu.remove(child)
+        def rebuild_menu(self, menu: Gtk.Menu) -> None:
+            for child in menu.get_children():
+                menu.remove(child)
 
             def rank(st: str) -> int:
                 c = status_category(st)
@@ -864,14 +889,14 @@ def run_tray_app() -> int:
                 return (s[: n - 1] + "…") if len(s) > n else s
 
             def add_header(r: HostResult) -> None:
-                if self.menu.get_children():
-                    self.menu.append(Gtk.SeparatorMenuItem())
+                if menu.get_children():
+                    menu.append(Gtk.SeparatorMenuItem())
                 h = r.host.name
                 if r.error:
                     h += f"  ⚠ {r.error}"
                 else:
                     h += f"  · {len(r.sessions)}"
-                self.menu.append(self._make_item(h, sensitive=False))
+                menu.append(self._make_item(h, sensitive=False))
 
             all_sorted: List[Session] = []
             for r in self.results:
@@ -888,13 +913,13 @@ def run_tray_app() -> int:
                 if s.host != last_host:
                     for r in self.results:
                         if r.host.name not in emitted:
-                            emitted.add(r.host.name)
+                            emitted.insert(r.host.name) if hasattr(emitted, "insert") else emitted.add(r.host.name)
                             add_header(r)
                             if r.host.name == s.host:
                                 break
                     last_host = s.host
 
-                dot = status_dot(status_category(s.status), s.entrypoint)
+                dot = status_dot(status_category(s.status))
                 title = "" if s.title in ("", "Claude Code") else clip(s.title, 44)
                 age_str = f"{s.status} {ago(s.statusSince)}".strip()
                 tag = "agy" if s.entrypoint == "agy" else "cc"
@@ -903,7 +928,7 @@ def run_tray_app() -> int:
                     parts.append(title)
                 parts.append(short_path(s.cwd))
                 row_text = "   ·   ".join(parts)
-                self.menu.append(self._make_item(row_text, sensitive=True, callback=self.on_activate_session, arg=s))
+                menu.append(self._make_item(row_text, sensitive=True, callback=self.on_activate_session, arg=s))
 
             for r in self.results:
                 if r.host.name not in emitted:
@@ -913,16 +938,16 @@ def run_tray_app() -> int:
             five_h, weekly, updated, source = read_usage(self.results)
             has_claude = any(r.hook in ("installed", "other", "none") for r in self.results)
             if updated is not None or has_claude:
-                self.menu.append(Gtk.SeparatorMenuItem())
+                menu.append(Gtk.SeparatorMenuItem())
                 if updated is not None or any(r.hook == "installed" for r in self.results):
                     for label, w in (("Claude 5-hour", five_h), ("Claude weekly", weekly)):
                         pct = int(w.pct) if w else 0
                         note = f"resets in {until_string(w.resetsAt)}" if w else "no data"
-                        self.menu.append(
+                        menu.append(
                             self._make_item(f"{label} usage   {pct}%   ({note})", sensitive=False)
                         )
                     if updated is not None:
-                        self.menu.append(
+                        menu.append(
                             self._make_item(
                                 f"Usage as of {ago(updated)} ago, from {source or '?'}",
                                 sensitive=False,
@@ -931,7 +956,7 @@ def run_tray_app() -> int:
 
                 missing = [r for r in self.results if r.error is None and r.hook == "none"]
                 for r in missing:
-                    self.menu.append(
+                    menu.append(
                         self._make_item(
                             f"Enable usage tracking on {r.host.name}…",
                             sensitive=True,
@@ -940,7 +965,7 @@ def run_tray_app() -> int:
                         )
                     )
                 if len(missing) > 1:
-                    self.menu.append(
+                    menu.append(
                         self._make_item(
                             f"Enable usage tracking on all {len(missing)} hosts…",
                             sensitive=True,
@@ -950,19 +975,19 @@ def run_tray_app() -> int:
                     )
                 for r in self.results:
                     if r.hook == "other":
-                        self.menu.append(
+                        menu.append(
                             self._make_item(
                                 f"{r.host.name}: has its own status line, usage not tracked",
                                 sensitive=False,
                             )
                         )
 
-            self.menu.append(Gtk.SeparatorMenuItem())
-            self.menu.append(self._make_item("Refresh now", callback=lambda _: self.poll()))
-            self.menu.append(self._make_item("Edit hosts…", callback=self.on_edit_config))
-            self.menu.append(self._make_item("Reload config", callback=self.on_reload_config))
-            self.menu.append(self._make_item("Quit", callback=lambda _: Gtk.main_quit()))
-            self.menu.show_all()
+            menu.append(Gtk.SeparatorMenuItem())
+            menu.append(self._make_item("Refresh now", callback=lambda _: self.poll()))
+            menu.append(self._make_item("Edit hosts…", callback=self.on_edit_config))
+            menu.append(self._make_item("Reload config", callback=self.on_reload_config))
+            menu.append(self._make_item("Quit", callback=lambda _: Gtk.main_quit()))
+            menu.show_all()
 
         def on_activate_session(self, _item: Gtk.MenuItem, s: Session) -> None:
             if not s.pane:

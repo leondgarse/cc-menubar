@@ -351,6 +351,28 @@ func clawdImage() -> NSImage {
     return img
 }
 
+func agyImage() -> NSImage {
+    let img = NSImage(size: NSSize(width: 13, height: 13), flipped: true) { _ in
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: 6.5, y: 1.0))
+        path.curve(to: NSPoint(x: 1.5, y: 12.0), controlPoint1: NSPoint(x: 4.5, y: 1.0), controlPoint2: NSPoint(x: 0.8, y: 10.5))
+        path.curve(to: NSPoint(x: 4.2, y: 9.2), controlPoint1: NSPoint(x: 2.1, y: 12.6), controlPoint2: NSPoint(x: 3.2, y: 11.2))
+        path.curve(to: NSPoint(x: 8.8, y: 9.2), controlPoint1: NSPoint(x: 5.2, y: 7.0), controlPoint2: NSPoint(x: 7.8, y: 7.0))
+        path.curve(to: NSPoint(x: 11.5, y: 12.0), controlPoint1: NSPoint(x: 9.8, y: 11.2), controlPoint2: NSPoint(x: 10.9, y: 12.6))
+        path.curve(to: NSPoint(x: 6.5, y: 1.0), controlPoint1: NSPoint(x: 12.2, y: 10.5), controlPoint2: NSPoint(x: 8.5, y: 1.0))
+        path.close()
+        let grad = NSGradient(colors: [
+            NSColor(calibratedRed: 0.98, green: 0.73, blue: 0.02, alpha: 1.0),
+            NSColor(calibratedRed: 0.92, green: 0.26, blue: 0.21, alpha: 1.0),
+            NSColor(calibratedRed: 0.17, green: 0.53, blue: 1.00, alpha: 1.0)
+        ])
+        grad?.draw(in: path, angle: 65)
+        return true
+    }
+    img.isTemplate = false
+    return img
+}
+
 func shQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
 // MARK: - App
@@ -407,7 +429,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let all = r.flatMap { $0.sessions }
         // A working session became idle: remember when (for "✓2m") and notify.
         for s in all where s.status == "idle" && color(for: lastStatus[s.key] ?? "idle") == .systemOrange {
-            lastFinished[s.host] = s.statusSince ?? Date()
+            let toolKey = (s.entrypoint == "agy" ? "agy:" : "cc:") + s.host
+            lastFinished[toolKey] = s.statusSince ?? Date()
             if config.notify ?? true {
                 let who = s.entrypoint == "agy" ? "Antigravity" : "Claude"
                 notify(title: "\(who) finished: \(s.name)", body: "\(s.host) · \(s.title.isEmpty ? shortPath(s.cwd) : s.title)")
@@ -466,66 +489,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let dimAttr: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.labelColor]
         let timeAttr: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.systemCyan]
         func clip(_ s: String) -> String { s.count > nameLen ? String(s.prefix(nameLen - 1)) + "…" : s }
-        for (i, h) in r.enumerated() {
-            // Bold host name leads each segment; a wide gap (no "|") separates hosts.
-            if i > 0 { t.append(NSAttributedString(string: hostGap)) }
-            t.append(NSAttributedString(string: h.host.name + " ", attributes: [
-                .foregroundColor: NSColor.labelColor,
-                .font: NSFont.boldSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize)]))
-            if h.error != nil {
-                t.append(NSAttributedString(string: "⚠︎", attributes: [.foregroundColor: NSColor.systemYellow]))
-            } else if h.sessions.isEmpty {
-                t.append(NSAttributedString(string: "0", attributes: dimAttr))
-            } else {
-                var first = true
-                for c in [NSColor.systemRed, .systemOrange, .systemGreen] {
-                    let group = h.sessions.filter { color(for: $0.status) == c }
-                    if group.isEmpty { continue }
-                    if !first { t.append(NSAttributedString(string: "  ")) }
-                    if c == .systemOrange && level < 3 {
-                        // Working sessions are listed one by one, longest-running first:
-                        // "● name 4m  ■ other 1m", or at level 2 without names: "● 4m ■ 1m".
-                        let sorted = group.sorted { ($0.statusSince ?? .distantFuture) < ($1.statusSince ?? .distantFuture) }
-                        for (k, s) in sorted.enumerated() {
-                            if k > 0 { t.append(NSAttributedString(string: level < 2 ? "  " : " ")) }
-                            let sym = s.entrypoint == "agy" ? "■" : "●"
-                            t.append(NSAttributedString(string: sym, attributes: [.foregroundColor: c]))
-                            if level < 2 { t.append(NSAttributedString(string: " " + clip(s.name))) }
-                            let since = ago(s.statusSince)
+        func appendHosts(isAgy: Bool) {
+            let prefix = isAgy ? "agy:" : "cc:"
+            for (i, h) in r.enumerated() {
+                if i > 0 { t.append(NSAttributedString(string: hostGap)) }
+                t.append(NSAttributedString(string: h.host.name + " ", attributes: [
+                    .foregroundColor: NSColor.labelColor,
+                    .font: boldFont]))
+                let toolSessions = h.sessions.filter { ($0.entrypoint == "agy") == isAgy }
+                if h.error != nil {
+                    t.append(NSAttributedString(string: "⚠︎", attributes: [.foregroundColor: NSColor.systemYellow]))
+                } else if toolSessions.isEmpty {
+                    t.append(NSAttributedString(string: "0", attributes: dimAttr))
+                } else {
+                    var first = true
+                    for c in [NSColor.systemRed, .systemOrange, .systemGreen] {
+                        let group = toolSessions.filter { color(for: $0.status) == c }
+                        if group.isEmpty { continue }
+                        if !first { t.append(NSAttributedString(string: "  ")) }
+                        if c == .systemOrange && level < 3 {
+                            let sorted = group.sorted { ($0.statusSince ?? .distantFuture) < ($1.statusSince ?? .distantFuture) }
+                            for (k, s) in sorted.enumerated() {
+                                if k > 0 { t.append(NSAttributedString(string: level < 2 ? "  " : " ")) }
+                                t.append(NSAttributedString(string: "●", attributes: [.foregroundColor: c]))
+                                if level < 2 { t.append(NSAttributedString(string: " " + clip(s.name))) }
+                                let since = ago(s.statusSince)
+                                if !since.isEmpty { t.append(NSAttributedString(string: " " + since, attributes: timeAttr)) }
+                            }
+                            first = false
+                            continue
+                        }
+                        t.append(NSAttributedString(string: "●", attributes: [.foregroundColor: c]))
+                        t.append(NSAttributedString(string: "\(group.count)"))
+                        let oldest = group.min { ($0.statusSince ?? .distantFuture) < ($1.statusSince ?? .distantFuture) }!
+                        if level >= 3 {
+                            // counts only
+                        } else if c == .systemOrange {
+                            let since = ago(oldest.statusSince)
                             if !since.isEmpty { t.append(NSAttributedString(string: " " + since, attributes: timeAttr)) }
+                        } else if c == .systemRed {
+                            var label = " " + clip(oldest.name)
+                            if group.count > 1 { label += " +\(group.count - 1)" }
+                            t.append(NSAttributedString(string: label, attributes: [.foregroundColor: NSColor.systemRed]))
+                        } else if let done = lastFinished[prefix + h.host.name], Date().timeIntervalSince(done) < 3600 {
+                            t.append(NSAttributedString(string: " ✓" + ago(done), attributes: timeAttr))
                         }
                         first = false
-                        continue
                     }
-                    let ccSub = group.filter { $0.entrypoint != "agy" }
-                    let agySub = group.filter { $0.entrypoint == "agy" }
-                    if !ccSub.isEmpty {
-                        t.append(NSAttributedString(string: "●", attributes: [.foregroundColor: c]))
-                        t.append(NSAttributedString(string: "\(ccSub.count)"))
-                    }
-                    if !agySub.isEmpty {
-                        if !ccSub.isEmpty { t.append(NSAttributedString(string: " ")) }
-                        t.append(NSAttributedString(string: "■", attributes: [.foregroundColor: c]))
-                        t.append(NSAttributedString(string: "\(agySub.count)"))
-                    }
-                    // Oldest status change first: the longest-waiting / longest-running session.
-                    let oldest = group.min { ($0.statusSince ?? .distantFuture) < ($1.statusSince ?? .distantFuture) }!
-                    if level >= 3 {
-                        // counts only
-                    } else if c == .systemOrange {
-                        let since = ago(oldest.statusSince)
-                        if !since.isEmpty { t.append(NSAttributedString(string: " " + since, attributes: timeAttr)) }
-                    } else if c == .systemRed {
-                        var label = " " + clip(oldest.name)
-                        if group.count > 1 { label += " +\(group.count - 1)" }
-                        t.append(NSAttributedString(string: label, attributes: [.foregroundColor: NSColor.systemRed]))
-                    } else if let done = lastFinished[h.host.name], Date().timeIntervalSince(done) < 3600 {
-                        t.append(NSAttributedString(string: " ✓" + ago(done), attributes: timeAttr))
-                    }
-                    first = false
                 }
             }
         }
+        appendHosts(isAgy: false)
+        t.append(NSAttributedString(string: hostGap))
+        let agyAtt = NSTextAttachment()
+        agyAtt.image = agyImage()
+        agyAtt.bounds = NSRect(x: 0, y: -2, width: 13, height: 13)
+        t.append(NSAttributedString(attachment: agyAtt))
+        t.append(NSAttributedString(string: " "))
+        appendHosts(isAgy: true)
         // Measure with the real menu bar font so the width check matches what's drawn.
         let base = NSFont.menuBarFont(ofSize: 0)
         t.enumerateAttribute(.font, in: NSRange(location: 0, length: t.length)) { v, range, _ in
