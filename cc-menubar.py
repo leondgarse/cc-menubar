@@ -509,7 +509,7 @@ def build_title(
         for label, w in (("5h", five_h), ("wk", weekly)):
             pct = int(w.pct) if w else 0
             u_parts.append(f"{label} {pct}%")
-        parts.append("  ".join(u_parts))
+        parts.append("cc " + "  ".join(u_parts))
         parts.append(host_gap)
 
     host_segments: List[str] = []
@@ -843,7 +843,7 @@ def run_tray_app() -> int:
             if updated is not None or has_claude:
                 self.menu.append(Gtk.SeparatorMenuItem())
                 if updated is not None or any(r.hook == "installed" for r in self.results):
-                    for label, w in (("5-hour", five_h), ("Weekly", weekly)):
+                    for label, w in (("Claude 5-hour", five_h), ("Claude weekly", weekly)):
                         pct = int(w.pct) if w else 0
                         note = f"resets in {until_string(w.resetsAt)}" if w else "no data"
                         self.menu.append(

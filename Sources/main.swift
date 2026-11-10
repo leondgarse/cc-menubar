@@ -423,9 +423,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let t = NSMutableAttributedString()
         let nameLen = level == 0 ? 20 : 12
         let hostGap = level == 0 ? "     " : level == 1 ? "    " : "   "
-        // Left side: account usage, e.g. "5h 42%  wk 18%" (cyan, orange >= 70%, red >= 90%).
+        // Left side: account usage, e.g. "cc 5h 42%  wk 18%" (cyan, orange >= 70%, red >= 90%).
         let usage = readUsage(r)
         let boldFont = NSFont.boldSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize)
+        t.append(NSAttributedString(string: "cc ", attributes: [.font: boldFont, .foregroundColor: NSColor.labelColor]))
         // Always shown; 0% when there's no reading (none yet, or the window has reset).
         for (i, (label, w)) in [("5h", usage.fiveHour), ("wk", usage.weekly)].enumerated() {
             let pct = w?.pct ?? 0
