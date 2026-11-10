@@ -243,6 +243,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let group = h.sessions.filter { color(for: $0.status) == c }
                     if group.isEmpty { continue }
                     if !first { t.append(NSAttributedString(string: "  ")) }
+                    if c == .systemOrange {
+                        // Working sessions are listed one by one: "● name 4m  ● other 1m", longest-running first.
+                        let sorted = group.sorted { ($0.statusSince ?? .distantFuture) < ($1.statusSince ?? .distantFuture) }
+                        for (k, s) in sorted.enumerated() {
+                            if k > 0 { t.append(NSAttributedString(string: "  ")) }
+                            t.append(NSAttributedString(string: "● ", attributes: [.foregroundColor: c]))
+                            t.append(NSAttributedString(string: clip(s.name)))
+                            let since = ago(s.statusSince)
+                            if !since.isEmpty { t.append(NSAttributedString(string: " " + since, attributes: timeAttr)) }
+                        }
+                        first = false
+                        continue
+                    }
                     t.append(NSAttributedString(string: "●", attributes: [.foregroundColor: c]))
                     t.append(NSAttributedString(string: "\(group.count)"))
                     // Oldest status change first: the longest-waiting / longest-running session.
@@ -251,10 +264,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         var label = " " + clip(oldest.name)
                         if group.count > 1 { label += " +\(group.count - 1)" }
                         t.append(NSAttributedString(string: label, attributes: [.foregroundColor: NSColor.systemRed]))
-                    } else if c == .systemOrange {
-                        if group.count == 1 { t.append(NSAttributedString(string: " " + clip(oldest.name))) }
-                        let since = ago(oldest.statusSince)
-                        if !since.isEmpty { t.append(NSAttributedString(string: " " + since, attributes: timeAttr)) }
                     } else if let done = lastFinished[h.host.name], Date().timeIntervalSince(done) < 3600 {
                         t.append(NSAttributedString(string: " ✓" + ago(done), attributes: timeAttr))
                     }

@@ -17,11 +17,11 @@ Launch at login: System Settings → General → Login Items → add `~/Applicat
 
 One segment per host, in config order, for example:
 
-    local ●1 my-session  ●1 task-monitor 4m  ●3 ✓2m     gpu-box ●2 12m  ●1
+    local ●1 my-session  ● task-monitor 4m  ●3 ✓2m     gpu-box ● train-run 12m  ● eval 3m  ●1
 
 - Red: waiting for input. Shows the longest-waiting session's name in red, plus `+N` if more are waiting.
-- Orange: working (`busy`, `shell`, …). Shows the session name when only one is working, and how long
-  the longest one has been working.
+- Orange: working (`busy`, `shell`, …). Each working session is shown separately with its name and how
+  long it has been working, longest-running first.
 - Green: idle. `✓2m` is the time since a session on that host last finished; it shows for an hour.
 - Times are cyan. `host 0` means the host has no sessions; `host ⚠︎` means it couldn't be reached.
 
