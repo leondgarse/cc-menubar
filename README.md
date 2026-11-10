@@ -15,9 +15,9 @@ Launch at login: System Settings → General → Login Items → add `~/Applicat
 
 ## Menu bar
 
-One segment per host, in config order, for example:
+Your 5-hour and weekly usage come first, then one segment per host, in config order, for example:
 
-    local ●1 my-session  ● task-monitor 4m  ●3 ✓2m     gpu-box ● train-run 12m  ● eval 3m  ●1
+    5h 59%  wk 49%     local ●1 my-session  ● task-monitor 4m  ●3 ✓2m     gpu-box ● train-run 12m  ● eval 3m  ●1
 
 - Red: waiting for input. Shows the longest-waiting session's name in red, plus `+N` if more are waiting.
 - Orange: working (`busy`, `shell`, …). Each working session is shown separately with its name and how
@@ -29,6 +29,19 @@ Click a session to switch tmux to its pane (locally, or over SSH on the remote's
 `terminalApp` to the front. A session with no tmux pane copies a `claude --resume` command instead
 (wrapped in `ssh -t` for a remote one).
 You get a notification when a session goes from working to idle.
+
+## Usage limits (5-hour / weekly)
+
+Claude Code passes your subscription usage to status line scripts. `statusline.sh` saves it to
+`~/.cache/cc-menubar/usage.json` for the app and prints `5h 59% · wk 49%` as your status line.
+Percentages are cyan, orange from 70% and red from 90%; the dropdown shows when each window resets.
+
+    cp statusline.sh ~/.claude/cc-menubar-statusline.sh
+    # then in ~/.claude/settings.json:
+    "statusLine": { "type": "command", "command": "~/.claude/cc-menubar-statusline.sh" }
+
+The numbers update whenever a session's status line refreshes, so they can lag while no session is active.
+Only shown for Claude subscription accounts.
 
 ## Config: `~/.config/cc-menubar/config.json`
 

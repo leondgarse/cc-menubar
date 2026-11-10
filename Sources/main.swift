@@ -159,6 +159,39 @@ func shortPath(_ p: String) -> String {
     return p.hasPrefix(home) ? "~" + p.dropFirst(home.count) : p
 }
 
+// MARK: - Usage limits
+// Written by statusline.sh from Claude Code's status line input (rate_limits.five_hour / seven_day).
+
+struct UsageWindow { let pct: Double; let resetsAt: Date }
+
+let usageURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/cc-menubar/usage.json")
+
+func readUsage() -> (fiveHour: UsageWindow?, weekly: UsageWindow?, updated: Date?) {
+    guard let data = try? Data(contentsOf: usageURL),
+          let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let rl = j["rate_limits"] as? [String: Any] else { return (nil, nil, nil) }
+    func win(_ k: String) -> UsageWindow? {
+        guard let w = rl[k] as? [String: Any], let p = w["used_percentage"] as? Double,
+              let r = w["resets_at"] as? Double else { return nil }
+        let reset = Date(timeIntervalSince1970: r)
+        // Window already reset since the last reading: usage starts over.
+        return UsageWindow(pct: reset < Date() ? 0 : p, resetsAt: reset)
+    }
+    let mod = (try? FileManager.default.attributesOfItem(atPath: usageURL.path))?[.modificationDate] as? Date
+    return (win("five_hour"), win("seven_day"), mod)
+}
+
+func untilString(_ d: Date) -> String {
+    let s = max(0, Int(d.timeIntervalSinceNow))
+    if s < 3600 { return "\(s / 60)m" }
+    if s < 86400 { return "\(s / 3600)h\(String(format: "%02d", (s % 3600) / 60))m" }
+    return "\(s / 86400)d\(s % 86400 / 3600)h"
+}
+
+func usageColor(_ pct: Double) -> NSColor {
+    pct >= 90 ? .systemRed : pct >= 70 ? .systemOrange : .systemCyan
+}
+
 func shQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
 // MARK: - App
@@ -222,6 +255,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         //   red = waiting (name in red), orange = working (name if only one + time working),
         //   green = idle, ✓ = time since a session last finished (shown for an hour).
         let t = NSMutableAttributedString()
+        // Left side: account usage, e.g. "5h 42%  wk 18%" (cyan, orange >= 70%, red >= 90%).
+        let usage = readUsage()
+        let boldFont = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+        var hasUsage = false
+        for (label, w) in [("5h", usage.fiveHour), ("wk", usage.weekly)] {
+            guard let w = w else { continue }
+            if hasUsage { t.append(NSAttributedString(string: "  ")) }
+            t.append(NSAttributedString(string: label + " ", attributes: [.font: boldFont, .foregroundColor: NSColor.labelColor]))
+            t.append(NSAttributedString(string: "\(Int(w.pct))%", attributes: [.foregroundColor: usageColor(w.pct)]))
+            hasUsage = true
+        }
+        if hasUsage { t.append(NSAttributedString(string: "     ")) }
         // Gray is too faint on the menu bar: use label colour for structure, cyan for times
         // (red/orange/green are reserved for session states).
         let dimAttr: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.labelColor]
@@ -358,6 +403,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(mi)
         }
         for r in results where !emitted.contains(r.host.name) { addHeader(r) }
+        menu.addItem(.separator())
+        let u = readUsage()
+        if u.fiveHour != nil || u.weekly != nil {
+            for (label, w) in [("5-hour", u.fiveHour), ("Weekly", u.weekly)] {
+                guard let w = w else { continue }
+                let ui = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                let a = NSMutableAttributedString(string: "\(label) usage  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold)])
+                a.append(NSAttributedString(string: "\(Int(w.pct))%", attributes: [.foregroundColor: usageColor(w.pct), .font: NSFont.systemFont(ofSize: 12, weight: .semibold)]))
+                a.append(NSAttributedString(string: "   resets in \(untilString(w.resetsAt))", attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 12)]))
+                ui.attributedTitle = a
+                menu.addItem(ui)
+            }
+            if let up = u.updated {
+                let ui = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                ui.attributedTitle = NSAttributedString(string: "Usage as of \(ago(up)) ago (updates while a session is active)",
+                                                        attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 11)])
+                menu.addItem(ui)
+            }
+        } else {
+            let ui = NSMenuItem(title: "No usage data yet: install statusline.sh (see README)", action: nil, keyEquivalent: "")
+            menu.addItem(ui)
+        }
         menu.addItem(.separator())
         let refresh = NSMenuItem(title: "Refresh now", action: #selector(refreshNow), keyEquivalent: "r")
         let edit = NSMenuItem(title: "Edit hosts…", action: #selector(editConfig), keyEquivalent: ",")
