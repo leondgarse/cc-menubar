@@ -468,24 +468,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let t = NSMutableAttributedString()
         let nameLen = level == 0 ? 20 : 12
         let hostGap = level == 0 ? "     " : level == 1 ? "    " : "   "
-        // Left side: account usage with small red Claude pixel icon, e.g. "[icon] 5h 42%  wk 18%".
         let usage = readUsage(r)
         let boldFont = NSFont.boldSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize)
-        let att = NSTextAttachment()
-        att.image = clawdImage()
-        att.bounds = NSRect(x: 0, y: -1, width: 15, height: 12)
-        t.append(NSAttributedString(attachment: att))
-        t.append(NSAttributedString(string: " "))
-        // Always shown; 0% when there's no reading (none yet, or the window has reset).
-        for (i, (label, w)) in [("5h", usage.fiveHour), ("wk", usage.weekly)].enumerated() {
-            let pct = w?.pct ?? 0
-            if i > 0 { t.append(NSAttributedString(string: "  ")) }
-            t.append(NSAttributedString(string: label + " ", attributes: [.font: boldFont, .foregroundColor: NSColor.labelColor]))
-            t.append(NSAttributedString(string: "\(Int(pct))%", attributes: [.foregroundColor: usageColor(pct)]))
-        }
-        t.append(NSAttributedString(string: hostGap))
-        // Gray is too faint on the menu bar: use label colour for structure, cyan for times
-        // (red/orange/green are reserved for session states).
+        let hasCC = r.contains { $0.error != nil || $0.sessions.contains { $0.entrypoint != "agy" } }
+        let hasAgy = r.contains { $0.error != nil || $0.sessions.contains { $0.entrypoint == "agy" } }
+        let showCC = hasCC || !hasAgy
+        let showAgy = hasAgy
         let dimAttr: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.labelColor]
         let timeAttr: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.systemCyan]
         func clip(_ s: String) -> String { s.count > nameLen ? String(s.prefix(nameLen - 1)) + "…" : s }
@@ -539,14 +527,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
-        appendHosts(isAgy: false)
-        t.append(NSAttributedString(string: hostGap))
-        let agyAtt = NSTextAttachment()
-        agyAtt.image = agyImage()
-        agyAtt.bounds = NSRect(x: 0, y: -2, width: 13, height: 13)
-        t.append(NSAttributedString(attachment: agyAtt))
-        t.append(NSAttributedString(string: " "))
-        appendHosts(isAgy: true)
+        if showCC {
+            let att = NSTextAttachment()
+            att.image = clawdImage()
+            att.bounds = NSRect(x: 0, y: -1, width: 15, height: 12)
+            t.append(NSAttributedString(attachment: att))
+            t.append(NSAttributedString(string: " "))
+            for (i, (label, w)) in [("5h", usage.fiveHour), ("wk", usage.weekly)].enumerated() {
+                let pct = w?.pct ?? 0
+                if i > 0 { t.append(NSAttributedString(string: "  ")) }
+                t.append(NSAttributedString(string: label + " ", attributes: [.font: boldFont, .foregroundColor: NSColor.labelColor]))
+                t.append(NSAttributedString(string: "\(Int(pct))%", attributes: [.foregroundColor: usageColor(pct)]))
+            }
+            t.append(NSAttributedString(string: hostGap))
+            appendHosts(isAgy: false)
+        }
+        if showAgy {
+            if showCC { t.append(NSAttributedString(string: hostGap)) }
+            let agyAtt = NSTextAttachment()
+            agyAtt.image = agyImage()
+            agyAtt.bounds = NSRect(x: 0, y: -2, width: 13, height: 13)
+            t.append(NSAttributedString(attachment: agyAtt))
+            t.append(NSAttributedString(string: " "))
+            appendHosts(isAgy: true)
+        }
         // Measure with the real menu bar font so the width check matches what's drawn.
         let base = NSFont.menuBarFont(ofSize: 0)
         t.enumerateAttribute(.font, in: NSRange(location: 0, length: t.length)) { v, range, _ in

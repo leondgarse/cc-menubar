@@ -655,13 +655,27 @@ def focus_terminal_app(app_name: Optional[str]) -> None:
         )
 
 
+def has_tool_sessions(results: List[HostResult], tool: str) -> bool:
+    return any(
+        r.error is not None or any((s.entrypoint == "agy") == (tool == "agy") for s in r.sessions)
+        for r in results
+    )
+
+
 def run_once_cli() -> int:
     cfg = load_config()
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(cfg.hosts))) as pool:
         results = list(pool.map(collect, cfg.hosts))
-    cc_title = render_compact_title(results, {}, cfg.maxWidth, tool="cc")
-    agy_title = render_compact_title(results, {}, cfg.maxWidth, tool="agy")
-    print(f"Top bar: [CC] {cc_title}   [AGY] {agy_title}\n")
+    show_cc = has_tool_sessions(results, "cc")
+    show_agy = has_tool_sessions(results, "agy")
+    if not show_cc and not show_agy:
+        show_cc = True
+    segs = []
+    if show_cc:
+        segs.append(f"[CC] {render_compact_title(results, {}, cfg.maxWidth, tool='cc')}")
+    if show_agy:
+        segs.append(f"[AGY] {render_compact_title(results, {}, cfg.maxWidth, tool='agy')}")
+    print("Top bar: " + "   ".join(segs) + "\n")
     for r in results:
         hdr = f"[{r.host.name}]"
         if r.error:
@@ -814,11 +828,30 @@ def run_tray_app() -> int:
             return False
 
         def render_title(self) -> None:
-            half_w = max(220.0, self.config.maxWidth / 2.0)
-            self.cc_label = render_compact_title(self.results, self.last_finished, half_w, tool="cc")
-            self.agy_label = render_compact_title(self.results, self.last_finished, half_w, tool="agy")
-            self.indicator_cc.set_label(self.cc_label, self.cc_label)
-            self.indicator_agy.set_label(self.agy_label, self.agy_label)
+            show_cc = has_tool_sessions(self.results, "cc")
+            show_agy = has_tool_sessions(self.results, "agy")
+            if not show_cc and not show_agy:
+                show_cc = True
+            avail_w = (
+                max(220.0, self.config.maxWidth / 2.0)
+                if (show_cc and show_agy)
+                else self.config.maxWidth
+            )
+            if show_cc:
+                self.cc_label = render_compact_title(self.results, self.last_finished, avail_w, tool="cc")
+                self.indicator_cc.set_label(self.cc_label, self.cc_label)
+                self.indicator_cc.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+            else:
+                self.indicator_cc.set_label("", "")
+                self.indicator_cc.set_status(AppIndicator3.IndicatorStatus.PASSIVE)
+
+            if show_agy:
+                self.agy_label = render_compact_title(self.results, self.last_finished, avail_w, tool="agy")
+                self.indicator_agy.set_label(self.agy_label, self.agy_label)
+                self.indicator_agy.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+            else:
+                self.indicator_agy.set_label("", "")
+                self.indicator_agy.set_status(AppIndicator3.IndicatorStatus.PASSIVE)
 
         def _ensure_leftmost(self) -> None:
             """
