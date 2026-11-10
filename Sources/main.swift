@@ -314,15 +314,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Left side: account usage, e.g. "5h 42%  wk 18%" (cyan, orange >= 70%, red >= 90%).
         let usage = readUsage(r)
         let boldFont = NSFont.boldSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize)
-        var hasUsage = false
-        for (label, w) in [("5h", usage.fiveHour), ("wk", usage.weekly)] {
-            guard let w = w else { continue }
-            if hasUsage { t.append(NSAttributedString(string: "  ")) }
+        // Always shown; 0% when there's no reading (none yet, or the window has reset).
+        for (i, (label, w)) in [("5h", usage.fiveHour), ("wk", usage.weekly)].enumerated() {
+            let pct = w?.pct ?? 0
+            if i > 0 { t.append(NSAttributedString(string: "  ")) }
             t.append(NSAttributedString(string: label + " ", attributes: [.font: boldFont, .foregroundColor: NSColor.labelColor]))
-            t.append(NSAttributedString(string: "\(Int(w.pct))%", attributes: [.foregroundColor: usageColor(w.pct)]))
-            hasUsage = true
+            t.append(NSAttributedString(string: "\(Int(pct))%", attributes: [.foregroundColor: usageColor(pct)]))
         }
-        if hasUsage { t.append(NSAttributedString(string: hostGap)) }
+        t.append(NSAttributedString(string: hostGap))
         // Gray is too faint on the menu bar: use label colour for structure, cyan for times
         // (red/orange/green are reserved for session states).
         let dimAttr: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.labelColor]
@@ -472,13 +471,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for r in results where !emitted.contains(r.host.name) { addHeader(r) }
         menu.addItem(.separator())
         let u = readUsage(results)
-        if u.fiveHour != nil || u.weekly != nil {
+        do {
             for (label, w) in [("5-hour", u.fiveHour), ("Weekly", u.weekly)] {
-                guard let w = w else { continue }
+                let pct = w?.pct ?? 0
                 let ui = NSMenuItem(title: "", action: nil, keyEquivalent: "")
                 let a = NSMutableAttributedString(string: "\(label) usage  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold)])
-                a.append(NSAttributedString(string: "\(Int(w.pct))%", attributes: [.foregroundColor: usageColor(w.pct), .font: NSFont.systemFont(ofSize: 12, weight: .semibold)]))
-                a.append(NSAttributedString(string: "   resets in \(untilString(w.resetsAt))", attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 12)]))
+                a.append(NSAttributedString(string: "\(Int(pct))%", attributes: [.foregroundColor: usageColor(pct), .font: NSFont.systemFont(ofSize: 12, weight: .semibold)]))
+                let note = w.map { "   resets in \(untilString($0.resetsAt))" } ?? "   no data"
+                a.append(NSAttributedString(string: note, attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 12)]))
                 ui.attributedTitle = a
                 menu.addItem(ui)
             }
@@ -488,8 +488,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                         attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 11)])
                 menu.addItem(ui)
             }
-        } else {
-            menu.addItem(NSMenuItem(title: "No usage data yet", action: nil, keyEquivalent: ""))
         }
         // Offer to set up the status line hook (the source of usage data) where it's missing.
         let missing = results.filter { $0.error == nil && $0.hook == "none" }
