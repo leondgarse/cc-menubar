@@ -14,6 +14,7 @@ struct Config: Codable {
     var interval: Double?     // seconds between polls (default 5)
     var notify: Bool?         // notify when a session goes busy -> idle (default true)
     var terminalApp: String?  // app to bring forward after selecting a tmux pane
+    var maxWidth: Double?     // max menu bar title width in points before it gets compacted (default 600)
     var hosts: [HostConfig]
 }
 
@@ -254,10 +255,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         //   local ●1 my-session  ●1 task-monitor 4m  ●3 ✓2m     RTX8000 ●2 12m  ●1
         //   red = waiting (name in red), orange = working (name if only one + time working),
         //   green = idle, ✓ = time since a session last finished (shown for an hour).
+        // Use the most detailed title that fits in maxWidth; macOS silently pushes a too-wide item off-screen.
+        let maxW = CGFloat(config.maxWidth ?? 600)
+        var t = buildTitle(r, level: 0)
+        for level in 1...3 where t.size().width > maxW { t = buildTitle(r, level: level) }
+        item.button?.attributedTitle = t
+    }
+
+    /// level 0: full · 1: shorter names, tighter gaps · 2: working sessions as "●N time" · 3: counts only.
+    func buildTitle(_ r: [HostResult], level: Int) -> NSAttributedString {
         let t = NSMutableAttributedString()
+        let nameLen = level == 0 ? 20 : 12
+        let hostGap = level == 0 ? "     " : level == 1 ? "    " : "   "
         // Left side: account usage, e.g. "5h 42%  wk 18%" (cyan, orange >= 70%, red >= 90%).
         let usage = readUsage()
-        let boldFont = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .bold)
+        let boldFont = NSFont.boldSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize)
         var hasUsage = false
         for (label, w) in [("5h", usage.fiveHour), ("wk", usage.weekly)] {
             guard let w = w else { continue }
@@ -266,18 +278,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             t.append(NSAttributedString(string: "\(Int(w.pct))%", attributes: [.foregroundColor: usageColor(w.pct)]))
             hasUsage = true
         }
-        if hasUsage { t.append(NSAttributedString(string: "     ")) }
+        if hasUsage { t.append(NSAttributedString(string: hostGap)) }
         // Gray is too faint on the menu bar: use label colour for structure, cyan for times
         // (red/orange/green are reserved for session states).
         let dimAttr: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.labelColor]
         let timeAttr: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.systemCyan]
-        func clip(_ s: String, _ n: Int = 20) -> String { s.count > n ? String(s.prefix(n - 1)) + "…" : s }
+        func clip(_ s: String) -> String { s.count > nameLen ? String(s.prefix(nameLen - 1)) + "…" : s }
         for (i, h) in r.enumerated() {
             // Bold host name leads each segment; a wide gap (no "|") separates hosts.
-            if i > 0 { t.append(NSAttributedString(string: "     ")) }
+            if i > 0 { t.append(NSAttributedString(string: hostGap)) }
             t.append(NSAttributedString(string: h.host.name + " ", attributes: [
                 .foregroundColor: NSColor.labelColor,
-                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .bold)]))
+                .font: NSFont.boldSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize)]))
             if h.error != nil {
                 t.append(NSAttributedString(string: "⚠︎", attributes: [.foregroundColor: NSColor.systemYellow]))
             } else if h.sessions.isEmpty {
@@ -288,7 +300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let group = h.sessions.filter { color(for: $0.status) == c }
                     if group.isEmpty { continue }
                     if !first { t.append(NSAttributedString(string: "  ")) }
-                    if c == .systemOrange {
+                    if c == .systemOrange && level < 2 {
                         // Working sessions are listed one by one: "● name 4m  ● other 1m", longest-running first.
                         let sorted = group.sorted { ($0.statusSince ?? .distantFuture) < ($1.statusSince ?? .distantFuture) }
                         for (k, s) in sorted.enumerated() {
@@ -305,7 +317,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     t.append(NSAttributedString(string: "\(group.count)"))
                     // Oldest status change first: the longest-waiting / longest-running session.
                     let oldest = group.min { ($0.statusSince ?? .distantFuture) < ($1.statusSince ?? .distantFuture) }!
-                    if c == .systemRed {
+                    if level >= 3 {
+                        // counts only
+                    } else if c == .systemOrange {
+                        let since = ago(oldest.statusSince)
+                        if !since.isEmpty { t.append(NSAttributedString(string: " " + since, attributes: timeAttr)) }
+                    } else if c == .systemRed {
                         var label = " " + clip(oldest.name)
                         if group.count > 1 { label += " +\(group.count - 1)" }
                         t.append(NSAttributedString(string: label, attributes: [.foregroundColor: NSColor.systemRed]))
@@ -316,7 +333,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
-        item.button?.attributedTitle = t
+        // Measure with the real menu bar font so the width check matches what's drawn.
+        let base = NSFont.menuBarFont(ofSize: 0)
+        t.enumerateAttribute(.font, in: NSRange(location: 0, length: t.length)) { v, range, _ in
+            if v == nil { t.addAttribute(.font, value: base, range: range) }
+        }
+        return t
     }
 
     func notify(title: String, body: String) {

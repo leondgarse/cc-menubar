@@ -23,6 +23,9 @@ Your 5-hour and weekly usage come first, then one segment per host, in config or
 - Orange: working (`busy`, `shell`, …). Each working session is shown separately with its name and how
   long it has been working, longest-running first.
 - Green: idle. `✓2m` is the time since a session on that host last finished; it shows for an hour.
+- If everything doesn't fit in `maxWidth` (default 600 points), the title is shortened step by step:
+  shorter names, then working sessions as `●2 19m` (count and longest time), then counts only.
+  Raise `maxWidth` in the config if you have room; macOS hides a menu bar item that doesn't fit.
 - Times are cyan. `host 0` means the host has no sessions; `host ⚠︎` means it couldn't be reached.
 
 Click a session to switch tmux to its pane (locally, or over SSH on the remote's tmux server) and bring
@@ -50,6 +53,7 @@ Only shown for Claude subscription accounts.
   "interval": 5,
   "notify": true,
   "terminalApp": "Ghostty",
+  "maxWidth": 600,
   "hosts": [
     { "name": "local" },
     { "name": "gpu-box", "ssh": "gpu-box" },
