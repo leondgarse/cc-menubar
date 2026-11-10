@@ -509,7 +509,7 @@ def build_title(
         for label, w in (("5h", five_h), ("wk", weekly)):
             pct = int(w.pct) if w else 0
             u_parts.append(f"{label} {pct}%")
-        parts.append("cc " + "  ".join(u_parts))
+        parts.append("  ".join(u_parts))
         parts.append(host_gap)
 
     host_segments: List[str] = []
@@ -588,16 +588,37 @@ def render_compact_title(
 
 
 def ensure_icons() -> str:
-    """Create minimal 1x1 transparent SVG icons so the top bar shows clean text + colored dots."""
+    """
+    Create the small red/terracotta Claude Code pixel mascot SVG icon:
+     ▐▛███▛█
+    ▝▜██████▀
+     ▝▝   ▝▝
+    """
     ICON_DIR.mkdir(parents=True, exist_ok=True)
+    # Exact subpixel bitmap from the 3-row block art (width 17, height 5, each row 2u tall in 18x16 viewBox)
     svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="16" viewBox="0 0 1 16">'
-        '<rect width="1" height="16" fill="none"/>'
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 18 16">'
+        '<g fill="#E05A47">'
+        # y=0 (top of head): x=3..15
+        '<rect x="3" y="3" width="13" height="2"/>'
+        # y=1 (eyes row): x=3..4, x=6..12, x=14..15 (eyes at x=5 and x=13)
+        '<rect x="3" y="5" width="2" height="2"/>'
+        '<rect x="6" y="5" width="7" height="2"/>'
+        '<rect x="14" y="5" width="2" height="2"/>'
+        # y=2 (body + arms): x=1..17
+        '<rect x="1" y="7" width="17" height="2"/>'
+        # y=3 (lower torso): x=3..15
+        '<rect x="3" y="9" width="13" height="2"/>'
+        # y=4 (four legs): x=3, x=5, x=13, x=15
+        '<rect x="3" y="11" width="1.3" height="2.2"/>'
+        '<rect x="5" y="11" width="1.3" height="2.2"/>'
+        '<rect x="13" y="11" width="1.3" height="2.2"/>'
+        '<rect x="15" y="11" width="1.3" height="2.2"/>'
+        "</g>"
         "</svg>\n"
     )
-    icon_file = ICON_DIR / "cc-menubar-empty.svg"
-    if not icon_file.exists():
-        icon_file.write_text(svg, encoding="utf-8")
+    icon_file = ICON_DIR / "cc-menubar-clawd.svg"
+    icon_file.write_text(svg, encoding="utf-8")
     return str(ICON_DIR)
 
 
@@ -687,7 +708,7 @@ def run_tray_app() -> int:
             icon_theme_path = ensure_icons()
             self.indicator = AppIndicator3.Indicator.new(
                 "cc-menubar",
-                "cc-menubar-empty",
+                "cc-menubar-clawd",
                 AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
             )
             self.indicator.set_icon_theme_path(icon_theme_path)

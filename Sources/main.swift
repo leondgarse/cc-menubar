@@ -329,6 +329,28 @@ func usageColor(_ pct: Double) -> NSColor {
     pct >= 90 ? .systemRed : pct >= 70 ? .systemOrange : .systemCyan
 }
 
+func clawdImage() -> NSImage {
+    let img = NSImage(size: NSSize(width: 15, height: 12), flipped: true) { _ in
+        NSColor(calibratedRed: 0.88, green: 0.35, blue: 0.28, alpha: 1.0).setFill()
+        let rects: [NSRect] = [
+            NSRect(x: 2, y: 1, width: 11, height: 2),
+            NSRect(x: 2, y: 3, width: 2, height: 2),
+            NSRect(x: 5, y: 3, width: 5, height: 2),
+            NSRect(x: 11, y: 3, width: 2, height: 2),
+            NSRect(x: 0, y: 5, width: 15, height: 2),
+            NSRect(x: 2, y: 7, width: 11, height: 2),
+            NSRect(x: 2, y: 9, width: 1.2, height: 2),
+            NSRect(x: 4, y: 9, width: 1.2, height: 2),
+            NSRect(x: 10, y: 9, width: 1.2, height: 2),
+            NSRect(x: 12, y: 9, width: 1.2, height: 2),
+        ]
+        for r in rects { r.fill() }
+        return true
+    }
+    img.isTemplate = false
+    return img
+}
+
 func shQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
 // MARK: - App
@@ -423,10 +445,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let t = NSMutableAttributedString()
         let nameLen = level == 0 ? 20 : 12
         let hostGap = level == 0 ? "     " : level == 1 ? "    " : "   "
-        // Left side: account usage, e.g. "cc 5h 42%  wk 18%" (cyan, orange >= 70%, red >= 90%).
+        // Left side: account usage with small red Claude pixel icon, e.g. "[icon] 5h 42%  wk 18%".
         let usage = readUsage(r)
         let boldFont = NSFont.boldSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize)
-        t.append(NSAttributedString(string: "cc ", attributes: [.font: boldFont, .foregroundColor: NSColor.labelColor]))
+        let att = NSTextAttachment()
+        att.image = clawdImage()
+        att.bounds = NSRect(x: 0, y: -1, width: 15, height: 12)
+        t.append(NSAttributedString(attachment: att))
+        t.append(NSAttributedString(string: " "))
         // Always shown; 0% when there's no reading (none yet, or the window has reset).
         for (i, (label, w)) in [("5h", usage.fiveHour), ("wk", usage.weekly)].enumerated() {
             let pct = w?.pct ?? 0
