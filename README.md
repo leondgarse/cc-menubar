@@ -1,10 +1,12 @@
 # cc-menubar
 
-macOS and Linux menu bar monitor for running **Claude Code** and **Antigravity CLI (`agy`)** sessions, locally and on SSH servers.
+macOS and Linux menu bar monitor for running **Claude Code**, **Antigravity CLI (`agy`)**, and **Codex** sessions, locally and on SSH servers.
 
 It reads:
 - Claude Code's session registry (`~/.claude/sessions/<pid>.json`)
 - Antigravity CLI's active presence locks (`~/.gemini/antigravity-cli/presence/*.lock`), SQLite conversation summaries (`conversation_summaries.db`), and step transcripts (`transcript.jsonl`)
+
+- Codex's live writer locks (`$CODEX_HOME/thread-writer-locks`, default `~/.codex`), thread metadata (`state_*.sqlite`), and rollout logs (`sessions/**/*.jsonl`)
 
 on every configured host.
 
@@ -13,16 +15,17 @@ on every configured host.
     ./build.sh            # macOS -> build/CCMenubar.app | Linux -> build/cc-menubar
     ./build.sh --install  # macOS -> ~/Applications/CCMenubar.app | Linux -> ~/.local/bin/cc-menubar + autostart
 
-- **macOS**: Launch at login via System Settings → General → Login Items → add `~/Applications/CCMenubar.app`.
+- **macOS**: Enable **Launch at login** in the menu bar dropdown (or add `~/Applications/CCMenubar.app` under System Settings → General → Login Items).
 - **Linux (Ubuntu / GNOME AppIndicator)**: Uses `/usr/bin/python3` with `AyatanaAppIndicator3` + GTK3 (included out of the box on Ubuntu Desktop). `./build.sh --install` installs to `~/.local/share/cc-menubar`, links `~/.local/bin/cc-menubar`, adds `~/.config/autostart/cc-menubar.desktop`, and launches it in the top bar. You can also test from the terminal with `./cc-menubar.py --once`.
 
 ## Menu bar
 
 Your 5-hour and weekly usage come first, then one segment per host, in config order, for example:
 
-    cc 5h 59%  wk 49%     local ●1 my-session  ■ task-monitor 4m  ●1 ■2 ✓2m     gpu-box ● train-run 12m  ● eval 3m  ●1
+    Claude 5h 59%  wk 49%  local ■ my-session 4m     AGY local ◆ task-monitor 4m     Codex local ● eval 3m
 
-- **Circles (`🔴`/`🟠`/`🟢` on Linux, `●` on macOS)** are Claude Code sessions; **Squares (`🟥`/`🟧`/`🟩` on Linux, `■` on macOS)** are Antigravity CLI (`agy`) sessions.
+- **Squares (`■`)** are Claude Code sessions; **diamonds (`◆`)** are Antigravity CLI (`agy`); **circles (`●`)** are Codex.
+- macOS colors each shape red, orange, or green. Linux uses colored square/circle emoji; AGY pairs its diamond with a colored status dot because Unicode has no red/green diamond emoji. Codex keeps the ChatGPT knot logo.
 - Red: waiting for input. Shows the longest-waiting session's name in red, plus `+N` if more are waiting.
 - Orange: working (`busy`, `shell`, …). Each working session is shown separately with its name and how
   long it has been working, longest-running first.
@@ -36,6 +39,14 @@ Click a session to switch tmux to its pane (locally, or over SSH on the remote's
 `terminalApp` to the front. A session with no tmux pane copies a `claude --resume` command instead
 (wrapped in `ssh -t` for a remote one).
 You get a notification when a session goes from working to idle.
+
+Codex sessions copy `codex resume <session-id>` when clicked. A shared Codex daemon can serve
+several clients, so its tmux pane cannot reliably identify a session's terminal. Codex activity is
+inferred from task-start, completion, and abort events; approval waits are currently shown as
+working. Missing activity events show `unknown`. Only sessions with an open writer-lock file are
+listed, so saved conversations and stale lock files do not appear as running sessions.
+Codex collection needs Python 3 and, on macOS, `lsof` on each host. These local file formats are
+internal and may change in future Codex releases.
 
 ## Usage limits (5-hour / weekly)
 
@@ -57,12 +68,20 @@ there is used. The app fetches the file from every host and shows the newest one
 keeps the numbers current. This assumes all hosts use the same Claude account. Only shown for Claude
 subscription accounts.
 
+Codex usage needs no status line hook: the app reads the latest quota snapshot from recent
+rollout logs, including 5-hour and weekly usage and reset times. It updates during Codex activity;
+the dropdown shows its age and source host. This assumes the same Codex account across hosts.
+Unavailable windows show `?`; after a window resets, the dropdown notes that a new reading is pending.
+
 ## Config: `~/.config/cc-menubar/config.json`
 
 ```json
 {
   "interval": 5,
   "notify": true,
+  "showClaude": true,
+  "showAgy": true,
+  "showCodex": true,
   "terminalApp": "Ghostty",
   "maxWidth": 600,
   "hosts": [
@@ -76,6 +95,9 @@ subscription accounts.
 `ssh` is any destination `ssh` accepts (your `~/.ssh/config` aliases work). Key-based auth is required
 (BatchMode). The remote only needs `sh`, `sed` and `tr` (no jq). Connections are reused through an SSH
 ControlMaster socket (`/tmp/cc-menubar-*`), so polling every few seconds stays cheap.
+`showClaude`, `showAgy`, and `showCodex` default to `true`. Set any to `false` to hide that tool's
+status, sessions, usage, and notifications. If all three are false, a small CCMenubar entry remains
+so you can edit/reload the config. Collection continues so showing a tool again picks up current data.
 After editing, use **Reload config** in the menu.
 
 ## License

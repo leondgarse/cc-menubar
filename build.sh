@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 if [ "$(uname -s)" = "Linux" ]; then
   mkdir -p build
   cp cc-menubar.py build/cc-menubar
-  cp statusline.sh install-statusline.sh build/
+  cp statusline.sh install-statusline.sh codex-collector.py assets/chatgpt.svg build/
   chmod +x build/cc-menubar build/statusline.sh build/install-statusline.sh
   echo "Built build/cc-menubar (Linux AppIndicator)"
   if [ "$1" = "--install" ]; then
@@ -14,7 +14,7 @@ if [ "$(uname -s)" = "Linux" ]; then
     DEST="$HOME/.local/share/cc-menubar"
     BIN="$HOME/.local/bin"
     mkdir -p "$DEST" "$BIN" "$HOME/.config/autostart" "$HOME/.local/share/applications" "$HOME/.config/systemd/user"
-    cp build/cc-menubar build/statusline.sh build/install-statusline.sh "$DEST/"
+    cp build/cc-menubar build/statusline.sh build/install-statusline.sh build/codex-collector.py build/chatgpt.svg "$DEST/"
     ln -sf "$DEST/cc-menubar" "$BIN/cc-menubar"
     cat > "$HOME/.config/autostart/cc-menubar.desktop" <<EOF
 [Desktop Entry]
@@ -69,11 +69,12 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>LSUIElement</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Focus the terminal tab that shows the selected session.</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict></plist>
 EOF
 mkdir -p "$APP/Contents/Resources"
-cp statusline.sh install-statusline.sh "$APP/Contents/Resources/"
+cp statusline.sh install-statusline.sh codex-collector.py assets/chatgpt.pdf "$APP/Contents/Resources/"
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 echo "Built $APP"
 if [ "$1" = "--install" ]; then

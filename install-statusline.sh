@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install statusline.sh as Claude Code's status line, locally or on an SSH host.
+# Install statusline.sh as Claude Code and AGY status line, locally or on an SSH host.
 # Usage: ./install-statusline.sh            # this machine
 #        ./install-statusline.sh <ssh-dest>  # a remote server (needs jq or python3 there)
 # Leaves an existing, different statusLine alone; backs up settings.json before changing it.
@@ -31,6 +31,28 @@ elif [ "$cur" = "$cmd" ]; then
   echo "already installed (script updated)"
 else
   echo "skipped: settings.json already has a statusLine: $cur"
+fi
+
+# Antigravity (agy) settings
+agy_dir="$HOME/.gemini/antigravity-cli"
+if [ -d "$agy_dir" ]; then
+  agy_settings="$agy_dir/settings.json"
+  [ -f "$agy_settings" ] || echo '{}' > "$agy_settings"
+  if command -v jq >/dev/null 2>&1; then
+    agy_cur=$(jq -r '.statusLine.command // empty' "$agy_settings")
+    set_agy_hook() { jq --arg c "$cmd" '.statusLine = {"command":$c}' "$agy_settings" > "$agy_settings.new"; }
+  elif command -v python3 >/dev/null 2>&1; then
+    agy_cur=$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("statusLine") or {}).get("command",""))' "$agy_settings")
+    set_agy_hook() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["statusLine"]={"command":sys.argv[2]}; json.dump(d,open(sys.argv[1]+".new","w"),indent=2)' "$agy_settings" "$cmd"; }
+  fi
+  if [ -z "$agy_cur" ]; then
+    cp "$agy_settings" "$agy_settings.bak-cc-menubar"
+    set_agy_hook
+    mv "$agy_settings.new" "$agy_settings"
+    echo "installed agy hook (backup: $agy_settings.bak-cc-menubar)"
+  elif [ "$agy_cur" = "$cmd" ]; then
+    echo "agy hook already installed"
+  fi
 fi
 EOF
 )

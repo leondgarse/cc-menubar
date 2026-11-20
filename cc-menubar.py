@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """
 cc-menubar — Linux (AppIndicator / GTK3) & CLI menu bar monitor for running
-Antigravity CLI (agy) and Claude Code sessions, locally and over SSH.
+Antigravity CLI (agy), Claude Code, and Codex sessions, locally and over SSH.
 """
 
 import concurrent.futures
@@ -57,13 +57,16 @@ done
 # 2. Antigravity CLI (agy) sessions (~/.gemini/antigravity-cli)
 if [ -d "$HOME/.gemini/antigravity-cli/presence" ] && command -v python3 >/dev/null 2>&1; then
   python3 - <<'PYEOF' 2>/dev/null
-import datetime, glob, json, os, sqlite3, subprocess
+import datetime, glob, json, os, re, sqlite3, subprocess
 
 home = os.path.expanduser("~")
+real_home = os.path.realpath(home)
 agy_dir = os.path.join(home, ".gemini", "antigravity-cli")
+real_agy_dir = os.path.realpath(agy_dir)
 presence_dir = os.path.join(agy_dir, "presence")
+presence_prefixes = tuple({os.path.join(agy_dir, "presence") + "/", os.path.join(real_agy_dir, "presence") + "/"})
 
-# Map conversation_id -> pid holding ~/.gemini/antigravity-cli/presence/<cid>.lock
+# Map conversation_id -> (pid, comm) holding ~/.gemini/antigravity-cli/presence/<cid>.lock
 locks = {}
 if os.path.isdir("/proc"):
     for fd in glob.glob("/proc/[0-9]*/fd/*"):
@@ -71,7 +74,7 @@ if os.path.isdir("/proc"):
             target = os.readlink(fd)
         except OSError:
             continue
-        if target.startswith(presence_dir + "/") and target.endswith(".lock"):
+        if target.startswith(presence_prefixes) and target.endswith(".lock"):
             try:
                 pid = int(fd.split("/")[2])
             except ValueError:
@@ -90,18 +93,20 @@ if os.path.isdir("/proc"):
 else:
     # Fallback for macOS / non-procfs hosts using lsof
     try:
-        out = subprocess.check_output(["lsof", "-F", "pcn", "--"] + glob.glob(os.path.join(presence_dir, "*.lock")), stderr=subprocess.DEVNULL, text=True)
-        cur_pid, cur_comm = None, ""
-        for line in out.splitlines():
-            if line.startswith("p"):
-                cur_pid = int(line[1:])
-            elif line.startswith("c"):
-                cur_comm = line[1:]
-            elif line.startswith("n") and line.endswith(".lock") and cur_pid:
-                cid = os.path.basename(line[1:])[:-5]
-                prev = locks.get(cid)
-                if prev is None or (cur_comm == "agy" and prev[1] != "agy"):
-                    locks[cid] = (cur_pid, cur_comm)
+        lock_files = glob.glob(os.path.join(presence_dir, "*.lock"))
+        if lock_files:
+            res = subprocess.run(["lsof", "-F", "pcn", "--"] + lock_files, capture_output=True, text=True)
+            cur_pid, cur_comm = None, ""
+            for line in res.stdout.splitlines():
+                if line.startswith("p"):
+                    cur_pid = int(line[1:])
+                elif line.startswith("c"):
+                    cur_comm = line[1:]
+                elif line.startswith("n") and line.endswith(".lock") and cur_pid:
+                    cid = os.path.basename(line[1:])[:-5]
+                    prev = locks.get(cid)
+                    if prev is None or (cur_comm == "agy" and prev[1] != "agy"):
+                        locks[cid] = (cur_pid, cur_comm)
     except Exception:
         pass
 
@@ -128,7 +133,7 @@ def parse_iso_ms(s):
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         # Truncate nanoseconds to microseconds for Python < 3.11 compatibility
-        m = __import__("re").match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?([+-]\d{2}:\d{2})?$", s)
+        m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?([+-]\d{2}:\d{2})?$", s)
         if m:
             base, frac, tz = m.group(1), (m.group(2) or "")[:6].ljust(6, "0"), m.group(3) or "+00:00"
             dt = datetime.datetime.fromisoformat(f"{base}.{frac}{tz}")
@@ -140,18 +145,35 @@ def parse_iso_ms(s):
 for cid, (pid, _) in locks.items():
     cwd = ""
     pane = None
-    try:
-        cwd = os.readlink(f"/proc/{pid}/cwd")
-    except OSError:
-        pass
-    try:
-        with open(f"/proc/{pid}/environ", "rb") as ef:
-            for item in ef.read().split(b"\0"):
-                if item.startswith(b"TMUX_PANE="):
-                    pane = item.split(b"=", 1)[1].decode("utf-8", "ignore")
+    if os.path.isdir("/proc"):
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            pass
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as ef:
+                for item in ef.read().split(b"\0"):
+                    if item.startswith(b"TMUX_PANE="):
+                        pane = item.split(b"=", 1)[1].decode("utf-8", "ignore")
+                        break
+        except OSError:
+            pass
+    else:
+        try:
+            out = subprocess.check_output(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], stderr=subprocess.DEVNULL, text=True)
+            for ln in out.splitlines():
+                if ln.startswith("n"):
+                    cwd = ln[1:]
                     break
-    except OSError:
-        pass
+        except Exception:
+            pass
+        try:
+            out = subprocess.check_output(["ps", "eww", "-p", str(pid), "-o", "command="], stderr=subprocess.DEVNULL, text=True)
+            m = re.search(r"(?:^|\s)TMUX_PANE=(%[0-9]+)", out)
+            if m:
+                pane = m.group(1)
+        except Exception:
+            pass
 
     title, db_status, not_idle, mod_time, input_time, ws_uris = db_rows.get(
         cid, ("", "CASCADE_RUN_STATUS_IDLE", 0, "", "", "[]")
@@ -202,7 +224,8 @@ for cid, (pid, _) in locks.items():
         except OSError:
             status_ts = int(datetime.datetime.now().timestamp() * 1000)
 
-    name = os.path.basename(cwd.rstrip("/")) if cwd and cwd != home else ("~" if cwd == home else cid[:8])
+    is_home = cwd in (home, real_home)
+    name = os.path.basename(cwd.rstrip("/")) if cwd and not is_home else ("~" if is_home else cid[:8])
     obj = {
         "pid": pid,
         "sessionId": cid,
@@ -221,15 +244,28 @@ fi
 # 3. Usage limits saved by statusline.sh (cc-menubar), with the file's mtime.
 u="$HOME/.cache/cc-menubar/usage.json"
 if [ -f "$u" ]; then printf 'USAGE\t%s\t%s\n' "$(date -r "$u" +%s)" "$(tr -d '\n\t' < "$u")"; fi
+au="$HOME/.cache/cc-menubar/agy-usage.json"
+if [ -f "$au" ]; then printf 'AGY_USAGE\t%s\t%s\n' "$(date -r "$au" +%s)" "$(tr -d '\n\t' < "$au")"; fi
 
 # 4. Is the cc-menubar status line hook set up here?
 s="$HOME/.claude/settings.json"
-if grep -q 'cc-menubar-statusline' "$s" 2>/dev/null; then h=installed
-elif grep -q '"statusLine"' "$s" 2>/dev/null; then h=other
-elif [ -d "$HOME/.claude" ]; then h=none
+gs="$HOME/.gemini/antigravity-cli/settings.json"
+if grep -q 'cc-menubar-statusline' "$s" "$gs" 2>/dev/null; then h=installed
+elif grep -q '"statusLine"' "$s" "$gs" 2>/dev/null; then h=other
+elif [ -d "$HOME/.claude" ] || [ -d "$HOME/.gemini/antigravity-cli" ]; then h=none
 else h=no_claude; fi
 printf 'HOOK\t%s\n' "$h"
 """
+
+
+# Send the same probe locally and over SSH; remote hosts need only Python 3.
+CODEX_PROBE_PATH = Path(__file__).resolve().with_name("codex-collector.py")
+if CODEX_PROBE_PATH.exists():
+    COLLECT_SCRIPT += "\nif command -v python3 >/dev/null 2>&1; then\npython3 - <<'CODEXEOF'\n" + CODEX_PROBE_PATH.read_text() + "\nCODEXEOF\nfi\n"
+
+
+def session_tool(session):
+    return session.entrypoint if session.entrypoint in ("agy", "codex") else "cc"
 
 
 @dataclasses.dataclass
@@ -244,6 +280,9 @@ class Config:
     notify: bool = True
     terminalApp: str = "Ghostty"
     maxWidth: float = 600.0
+    showClaude: bool = True
+    showAgy: bool = True
+    showCodex: bool = True
     hosts: List[HostConfig] = dataclasses.field(
         default_factory=lambda: [HostConfig(name="local", ssh=None)]
     )
@@ -279,6 +318,8 @@ class HostResult:
     sessions: List[Session] = dataclasses.field(default_factory=list)
     error: Optional[str] = None
     usage: Optional[Tuple[bytes, float]] = None
+    agy_usage: Optional[Tuple[bytes, float]] = None
+    codex_usage: Optional[Tuple[bytes, float]] = None
     hook: Optional[str] = None
 
 
@@ -296,6 +337,9 @@ def load_config() -> Config:
                 notify=bool(raw.get("notify", True)),
                 terminalApp=str(raw.get("terminalApp", "Ghostty")),
                 maxWidth=float(raw.get("maxWidth", 600)),
+                showClaude=bool(raw.get("showClaude", True)),
+                showAgy=bool(raw.get("showAgy", True)),
+                showCodex=bool(raw.get("showCodex", True)),
                 hosts=hosts or [HostConfig(name="local")],
             )
         except Exception:
@@ -309,6 +353,9 @@ def load_config() -> Config:
             "maxWidth": int(cfg.maxWidth),
             "notify": cfg.notify,
             "terminalApp": cfg.terminalApp,
+            "showClaude": cfg.showClaude,
+            "showAgy": cfg.showAgy,
+            "showCodex": cfg.showCodex,
         }
         try:
             CONFIG_PATH.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -353,8 +400,35 @@ def status_category(status: str) -> str:
     return "orange"
 
 
-def status_dot(cat: str) -> str:
-    return {"red": "🔴", "orange": "🟠", "green": "🟢"}.get(cat, "🟠")
+def tool_enabled(config: Config, tool: str) -> bool:
+    return {"cc": config.showClaude, "agy": config.showAgy, "codex": config.showCodex}[tool]
+
+
+def visible_results(results: List[HostResult], config: Config) -> List[HostResult]:
+    return [dataclasses.replace(
+        r, sessions=[s for s in r.sessions if tool_enabled(config, session_tool(s))],
+        usage=r.usage if config.showClaude else None,
+        agy_usage=r.agy_usage if config.showAgy else None,
+        codex_usage=r.codex_usage if config.showCodex else None,
+        hook=r.hook if config.showClaude else None,
+    ) for r in results]
+
+
+def shown_tools(results: List[HostResult], config: Config):
+    shown = {tool: tool_enabled(config, tool) and has_tool_sessions(results, tool)
+             for tool in ("cc", "agy", "codex")}
+    if not any(shown.values()) and config.showClaude:
+        shown["cc"] = True
+    return shown
+
+
+def status_dot(cat: str, tool: str = "codex") -> str:
+    if tool == "cc":
+        return {"red": "🟥", "orange": "🟧", "green": "🟩"}.get(cat, "🟧")
+    color = {"red": "🔴", "orange": "🟠", "green": "🟢"}.get(cat, "🟠")
+    # Unicode has no red/green diamond emoji. Preserve both color and tool shape
+    # in plain-text AppIndicator labels; macOS renders the diamond itself in color.
+    return color + "◆" if tool == "agy" else color
 
 
 def ago(ts: Optional[float]) -> str:
@@ -410,6 +484,22 @@ def collect(host: HostConfig) -> HostResult:
                 except ValueError:
                     pass
             continue
+        if line.startswith("CODEX_USAGE\t"):
+            parts = line.split("\t", 2)
+            if len(parts) == 3:
+                try:
+                    res.codex_usage = (parts[2].encode("utf-8"), float(parts[1]))
+                except ValueError:
+                    pass
+            continue
+        if line.startswith("AGY_USAGE\t"):
+            parts = line.split("\t", 2)
+            if len(parts) == 3:
+                try:
+                    res.agy_usage = (parts[2].encode("utf-8"), float(parts[1]))
+                except ValueError:
+                    pass
+            continue
         parts = line.split("\t", 1)
         try:
             j = json.loads(parts[0])
@@ -450,37 +540,197 @@ def collect(host: HostConfig) -> HostResult:
 
 def read_usage(
     results: List[HostResult],
+    tool: str = "cc",
 ) -> Tuple[Optional[UsageWindow], Optional[UsageWindow], Optional[float], Optional[str]]:
     candidates: List[Tuple[bytes, float, str]] = []
     for r in results:
-        if r.usage:
-            candidates.append((r.usage[0], r.usage[1], r.host.name))
-    if not candidates and USAGE_PATH.exists():
+        reading = r.codex_usage if tool == "codex" else r.usage
+        if reading:
+            candidates.append((reading[0], reading[1], r.host.name))
+    if tool == "cc" and not any(c[2] in ("local", "Local", "this Mac") for c in candidates) and USAGE_PATH.exists():
         try:
             candidates.append((USAGE_PATH.read_bytes(), USAGE_PATH.stat().st_mtime, "local"))
         except Exception:
             pass
     if not candidates:
         return None, None, None, None
-    best_json, best_ts, best_src = max(candidates, key=lambda x: x[1])
-    try:
-        j = json.loads(best_json)
-        rl = j.get("rate_limits") or {}
-    except Exception:
+
+    if tool == "codex":
+        candidates = [max(candidates, key=lambda c: c[1])]
+    now = time.time()
+
+    def parse_window(k: str) -> List[Tuple[UsageWindow, float, str]]:
+        readings: List[Tuple[UsageWindow, float, str]] = []
+        for raw_json, ts, src in candidates:
+            try:
+                j = json.loads(raw_json)
+                rl = j.get("rate_limits") or {}
+                w = rl.get(k)
+                if not isinstance(w, dict):
+                    continue
+                p = w.get("used_percentage")
+                r = w.get("resets_at")
+                if not isinstance(p, (int, float)) or not isinstance(r, (int, float)):
+                    continue
+                r_float = float(r)
+                pct = 0.0 if r_float < now else float(p)
+                readings.append((UsageWindow(pct=pct, resetsAt=r_float), ts, src))
+            except Exception:
+                continue
+        return readings
+
+    def sort_key(item: Tuple[UsageWindow, float, str]):
+        w, ts, _ = item
+        expired = w.resetsAt < now
+        return (0 if expired else 1, w.pct, ts)
+
+    five_h_readings = parse_window("five_hour")
+    weekly_readings = parse_window("seven_day")
+
+    best_5h = max(five_h_readings, key=sort_key) if five_h_readings else None
+    best_wk = max(weekly_readings, key=sort_key) if weekly_readings else None
+
+    all_best = [x for x in (best_5h, best_wk) if x is not None]
+    if not all_best:
         return None, None, None, None
 
-    def win(k: str) -> Optional[UsageWindow]:
-        w = rl.get(k)
-        if not isinstance(w, dict):
-            return None
-        p = w.get("used_percentage")
-        r = w.get("resets_at")
-        if not isinstance(p, (int, float)) or not isinstance(r, (int, float)):
-            return None
-        pct = 0.0 if float(r) < time.time() else float(p)
-        return UsageWindow(pct=pct, resetsAt=float(r))
+    primary = max(all_best, key=sort_key)
+    return (
+        best_5h[0] if best_5h else None,
+        best_wk[0] if best_wk else None,
+        primary[1],
+        primary[2],
+    )
 
-    return win("five_hour"), win("seven_day"), best_ts, best_src
+
+AGY_USAGE_PATH = CACHE_DIR / "agy-usage.json"
+
+
+@dataclasses.dataclass
+class AgyBucket:
+    used_pct: float
+    remaining_fraction: float
+    resets_at: Optional[float]
+    disabled: bool
+
+
+@dataclasses.dataclass
+class AgyUsage:
+    gemini_5h: Optional[AgyBucket] = None
+    gemini_weekly: Optional[AgyBucket] = None
+    argon_weekly: Optional[AgyBucket] = None
+    tp_5h: Optional[AgyBucket] = None
+    tp_weekly: Optional[AgyBucket] = None
+    updated: Optional[float] = None
+    source: Optional[str] = None
+
+    @property
+    def has_data(self) -> bool:
+        return any(
+            x is not None
+            for x in (
+                self.gemini_5h,
+                self.gemini_weekly,
+                self.argon_weekly,
+                self.tp_5h,
+                self.tp_weekly,
+            )
+        )
+
+    @property
+    def gemini_pct(self) -> Optional[float]:
+        return self.gemini_weekly.used_pct if self.gemini_weekly else (self.gemini_5h.used_pct if self.gemini_5h else None)
+
+    @property
+    def argon_pct(self) -> Optional[float]:
+        return self.argon_weekly.used_pct if self.argon_weekly else None
+
+    @property
+    def tp_pct(self) -> Optional[float]:
+        return self.tp_weekly.used_pct if self.tp_weekly else (self.tp_5h.used_pct if self.tp_5h else None)
+
+
+def read_agy_usage(results: List[HostResult]) -> AgyUsage:
+    candidates: List[Tuple[bytes, float, str]] = []
+    for r in results:
+        if r.agy_usage:
+            candidates.append((r.agy_usage[0], r.agy_usage[1], r.host.name))
+    if not any(c[2] in ("local", "Local", "this Mac") for c in candidates) and AGY_USAGE_PATH.exists():
+        try:
+            candidates.append((AGY_USAGE_PATH.read_bytes(), AGY_USAGE_PATH.stat().st_mtime, "local"))
+        except Exception:
+            pass
+    if not candidates:
+        return AgyUsage()
+
+    now = time.time()
+
+    def parse_bucket(k: str) -> List[Tuple[AgyBucket, float, str]]:
+        readings = []
+        for raw_json, ts, src in candidates:
+            try:
+                j = json.loads(raw_json)
+                q = j.get("quota") or {}
+                b = q.get(k)
+                if not isinstance(b, dict):
+                    continue
+                rem = b.get("remaining_fraction")
+                if not isinstance(rem, (int, float)):
+                    continue
+                rem_val = float(rem)
+                resets_at = None
+                rt = b.get("reset_time")
+                if isinstance(rt, str):
+                    try:
+                        resets_at = datetime.datetime.fromisoformat(rt.replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        pass
+                disabled = bool(b.get("disabled", False))
+                is_expired = resets_at is not None and resets_at < now
+                eff_rem = 1.0 if is_expired else max(0.0, min(1.0, rem_val))
+                used_pct = max(0.0, min(100.0, (1.0 - eff_rem) * 100.0))
+                bucket = AgyBucket(
+                    used_pct=used_pct,
+                    remaining_fraction=eff_rem,
+                    resets_at=resets_at,
+                    disabled=disabled,
+                )
+                readings.append((bucket, ts, src))
+            except Exception:
+                continue
+        return readings
+
+    def sort_key(item: Tuple[AgyBucket, float, str]):
+        b, ts, _ = item
+        expired = b.resets_at is not None and b.resets_at < now
+        return (0 if expired else 1, b.used_pct, ts)
+
+    g5_list = parse_bucket("gemini-5h")
+    gwk_list = parse_bucket("gemini-weekly")
+    arg_list = parse_bucket("gemini-argon-wtu-weekly")
+    tp5_list = parse_bucket("3p-5h")
+    tpwk_list = parse_bucket("3p-weekly")
+
+    g5 = max(g5_list, key=sort_key) if g5_list else None
+    gwk = max(gwk_list, key=sort_key) if gwk_list else None
+    arg = max(arg_list, key=sort_key) if arg_list else None
+    tp5 = max(tp5_list, key=sort_key) if tp5_list else None
+    tpwk = max(tpwk_list, key=sort_key) if tpwk_list else None
+
+    all_best = [x for x in (g5, gwk, arg, tp5, tpwk) if x is not None]
+    if not all_best:
+        return AgyUsage()
+
+    primary = max(all_best, key=sort_key)
+    return AgyUsage(
+        gemini_5h=g5[0] if g5 else None,
+        gemini_weekly=gwk[0] if gwk else None,
+        argon_weekly=arg[0] if arg else None,
+        tp_5h=tp5[0] if tp5 else None,
+        tp_weekly=tpwk[0] if tpwk else None,
+        updated=primary[1],
+        source=primary[2],
+    )
 
 
 def build_tool_title(
@@ -503,34 +753,42 @@ def build_tool_title(
     def clip(s: str) -> str:
         return (s[: name_len - 1] + "…") if len(s) > name_len else s
 
-    if tool == "cc":
-        five_h, weekly, updated, _ = read_usage(results)
-        if updated is not None or any(r.hook == "installed" for r in results):
+    if tool in ("cc", "codex"):
+        five_h, weekly, updated, _ = read_usage(results, tool=tool)
+        if updated is not None or (tool == "cc" and any(r.hook == "installed" for r in results)):
             u_parts = []
             for label, w in (("5h", five_h), ("wk", weekly)):
-                pct = int(w.pct) if w else 0
-                u_parts.append(f"{label} {pct}%")
+                pct = f"{int(w.pct)}%" if w else "?"
+                u_parts.append(f"{label} {pct}")
             parts.append("  ".join(u_parts))
-            parts.append(host_gap)
+    elif tool == "agy":
+        agy_usage = read_agy_usage(results)
+        if level == 0 and agy_usage.has_data:
+            u_parts = []
+            for label, pct in (("gem", agy_usage.gemini_pct), ("arg", agy_usage.argon_pct), ("3p", agy_usage.tp_pct)):
+                if pct is not None:
+                    u_parts.append(f"{label} {int(pct)}%")
+            if u_parts:
+                parts.append("  ".join(u_parts))
 
     host_segments: List[str] = []
     now = time.time()
     for h in results:
-        seg = f"{h.host.name} "
         tool_sessions = [
-            s for s in h.sessions if (s.entrypoint == "agy") == (tool == "agy")
+            s for s in h.sessions if session_tool(s) == tool
         ]
-        if h.error is not None:
+        if h.error is None and not tool_sessions:
+            continue
+        seg = f"{h.host.name} "
+        if h.error is not None and not tool_sessions:
             seg += "⚠"
-        elif not tool_sessions:
-            seg += "0"
         else:
             groups_out: List[str] = []
             for cat in ("red", "orange", "green"):
                 group = [s for s in tool_sessions if status_category(s.status) == cat]
                 if not group:
                     continue
-                dot = status_dot(cat)
+                dot = status_dot(cat, tool)
                 if cat == "orange" and level < 3:
                     sorted_g = sorted(group, key=lambda s: s.statusSince if s.statusSince is not None else float("inf"))
                     items: List[str] = []
@@ -566,7 +824,10 @@ def build_tool_title(
             seg += "  ".join(groups_out)
         host_segments.append(seg)
 
-    parts.append(host_gap.join(host_segments))
+    if host_segments:
+        if parts:
+            parts.append(host_gap)
+        parts.append(host_gap.join(host_segments))
     return "".join(parts)
 
 
@@ -623,6 +884,12 @@ def ensure_icons() -> str:
         "</svg>\n"
     )
     (ICON_DIR / "cc-menubar-agy.svg").write_text(agy_svg, encoding="utf-8")
+    codex_svg = Path(__file__).resolve().with_name("chatgpt.svg")
+    if not codex_svg.exists():
+        codex_svg = Path(__file__).resolve().parent / "assets" / "chatgpt.svg"
+    (ICON_DIR / "cc-menubar-codex.svg").write_text(
+        codex_svg.read_text(encoding="utf-8").replace('<svg ', '<svg fill="#10A37F" ', 1),
+        encoding="utf-8")
     return str(ICON_DIR)
 
 
@@ -657,7 +924,7 @@ def focus_terminal_app(app_name: Optional[str]) -> None:
 
 def has_tool_sessions(results: List[HostResult], tool: str) -> bool:
     return any(
-        r.error is not None or any((s.entrypoint == "agy") == (tool == "agy") for s in r.sessions)
+        r.error is not None or any(session_tool(s) == tool for s in r.sessions)
         for r in results
     )
 
@@ -666,16 +933,17 @@ def run_once_cli() -> int:
     cfg = load_config()
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(cfg.hosts))) as pool:
         results = list(pool.map(collect, cfg.hosts))
-    show_cc = has_tool_sessions(results, "cc")
-    show_agy = has_tool_sessions(results, "agy")
-    if not show_cc and not show_agy:
-        show_cc = True
+    results = visible_results(results, cfg)
+    shown = shown_tools(results, cfg)
+    show_cc, show_agy, show_codex = (shown[t] for t in ("cc", "agy", "codex"))
     segs = []
     if show_cc:
         segs.append(f"[CC] {render_compact_title(results, {}, cfg.maxWidth, tool='cc')}")
     if show_agy:
         segs.append(f"[AGY] {render_compact_title(results, {}, cfg.maxWidth, tool='agy')}")
-    print("Top bar: " + "   ".join(segs) + "\n")
+    if show_codex:
+        segs.append(f"[Codex] {render_compact_title(results, {}, cfg.maxWidth, tool='codex')}")
+    print("Top bar: " + ("   ".join(segs) or "CCMenubar") + "\n")
     for r in results:
         hdr = f"[{r.host.name}]"
         if r.error:
@@ -683,8 +951,8 @@ def run_once_cli() -> int:
             continue
         print(f"{hdr} {len(r.sessions)} session(s):")
         for s in r.sessions:
-            dot = status_dot(status_category(s.status))
-            kind = "agy" if s.entrypoint == "agy" else "claude"
+            dot = status_dot(status_category(s.status), session_tool(s))
+            kind = session_tool(s)
             print(
                 f"  {dot} {s.name:<20} {s.status:<8} {ago(s.statusSince):<5} "
                 f"[{kind}] pane={s.pane or '-'}  {s.title or '-'}  ({short_path(s.cwd)})"
@@ -762,6 +1030,13 @@ def run_tray_app() -> int:
             self.menu_cc = Gtk.Menu()
             self.indicator_cc.set_menu(self.menu_cc)
 
+            self.indicator_codex = AppIndicator3.Indicator.new(
+                "cc-menubar-codex", "cc-menubar-codex", AppIndicator3.IndicatorCategory.APPLICATION_STATUS)
+            self.indicator_codex.set_icon_theme_path(icon_theme_path)
+            self.indicator_codex.set_status(AppIndicator3.IndicatorStatus.PASSIVE)
+            self.menu_codex = Gtk.Menu()
+            self.indicator_codex.set_menu(self.menu_codex)
+
             self.start_timers()
             self.poll()
 
@@ -807,16 +1082,16 @@ def run_tray_app() -> int:
 
         def _on_poll_complete(self, results: List[HostResult]) -> bool:
             self.polling = False
-            self.results = results
-            all_sessions = [s for r in results for s in r.sessions]
+            self.results = visible_results(results, self.config)
+            all_sessions = [s for r in self.results for s in r.sessions]
 
             for s in all_sessions:
                 prev_cat = status_category(self.last_status.get(s.key, "idle"))
                 if s.status == "idle" and prev_cat == "orange":
-                    tool_key = "agy" if s.entrypoint == "agy" else "cc"
+                    tool_key = session_tool(s)
                     self.last_finished[f"{tool_key}:{s.host}"] = s.statusSince or time.time()
                     if self.config.notify:
-                        agent_label = "Antigravity" if s.entrypoint == "agy" else "Claude"
+                        agent_label = {"agy": "Antigravity", "cc": "Claude", "codex": "Codex"}[session_tool(s)]
                         body = f"{s.host} · {s.title if s.title else short_path(s.cwd)}"
                         send_notification(f"{agent_label} finished: {s.name}", body)
 
@@ -824,21 +1099,25 @@ def run_tray_app() -> int:
             self.render_title()
             self.rebuild_menu(self.menu_cc)
             self.rebuild_menu(self.menu_agy)
+            self.rebuild_menu(self.menu_codex)
             self._ensure_leftmost()
             return False
 
         def render_title(self) -> None:
-            show_cc = has_tool_sessions(self.results, "cc")
-            show_agy = has_tool_sessions(self.results, "agy")
-            if not show_cc and not show_agy:
-                show_cc = True
-            avail_w = (
-                max(220.0, self.config.maxWidth / 2.0)
-                if (show_cc and show_agy)
-                else self.config.maxWidth
-            )
-            if show_cc:
-                self.cc_label = render_compact_title(self.results, self.last_finished, avail_w, tool="cc")
+            shown = shown_tools(self.results, self.config)
+            show_cc, show_agy, show_codex = (shown[t] for t in ("cc", "agy", "codex"))
+            placeholder = not any(shown.values())
+            visible_count = sum((show_cc, show_agy, show_codex))
+            avail_w = max(160.0, self.config.maxWidth / max(1, visible_count))
+            if show_codex:
+                label = render_compact_title(self.results, self.last_finished, avail_w, tool="codex")
+                self.indicator_codex.set_label(label, label)
+                self.indicator_codex.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+            else:
+                self.indicator_codex.set_label("", "")
+                self.indicator_codex.set_status(AppIndicator3.IndicatorStatus.PASSIVE)
+            if show_cc or placeholder:
+                self.cc_label = "CCMenubar" if placeholder else render_compact_title(self.results, self.last_finished, avail_w, tool="cc")
                 self.indicator_cc.set_label(self.cc_label, self.cc_label)
                 self.indicator_cc.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
             else:
@@ -875,7 +1154,7 @@ def run_tray_app() -> int:
                     500,
                     None,
                 )
-                items = list(ret.unpack()[0])
+                items = [i for i in ret.unpack()[0] if not i.endswith("/cc_menubar_codex")]
                 has_cc = any(i.endswith("/cc_menubar_cc") for i in items)
                 has_agy = any(i.endswith("/cc_menubar_agy") for i in items)
                 if has_cc and has_agy and len(items) >= 2:
@@ -952,10 +1231,10 @@ def run_tray_app() -> int:
                                 break
                     last_host = s.host
 
-                dot = status_dot(status_category(s.status))
+                dot = status_dot(status_category(s.status), session_tool(s))
                 title = "" if s.title in ("", "Claude Code") else clip(s.title, 44)
                 age_str = f"{s.status} {ago(s.statusSince)}".strip()
-                tag = "agy" if s.entrypoint == "agy" else "cc"
+                tag = session_tool(s)
                 parts = [f"{dot} {clip(s.name, 28)} [{tag}]", age_str]
                 if title:
                     parts.append(title)
@@ -967,10 +1246,19 @@ def run_tray_app() -> int:
                 if r.host.name not in emitted:
                     add_header(r)
 
+            c5, cw, updated, source = read_usage(self.results, tool="codex")
+            if self.config.showCodex and updated is not None:
+                menu.append(Gtk.SeparatorMenuItem())
+                for label, window in (("5-hour", c5), ("Weekly", cw)):
+                    if window:
+                        note = "window reset; awaiting update" if window.resetsAt < time.time() else f"resets in {until_string(window.resetsAt)}"
+                        menu.append(self._make_item(f"Codex {label} usage   {int(window.pct)}%   ({note})", sensitive=False))
+                menu.append(self._make_item(f"Codex usage as of {ago(updated)} ago, from {source} (updates during Codex activity)", sensitive=False))
+
             # Usage section (shown if usage exists or Claude Code is present on any host)
             five_h, weekly, updated, source = read_usage(self.results)
             has_claude = any(r.hook in ("installed", "other", "none") for r in self.results)
-            if updated is not None or has_claude:
+            if self.config.showClaude and (updated is not None or has_claude):
                 menu.append(Gtk.SeparatorMenuItem())
                 if updated is not None or any(r.hook == "installed" for r in self.results):
                     for label, w in (("Claude 5-hour", five_h), ("Claude weekly", weekly)):
@@ -986,6 +1274,42 @@ def run_tray_app() -> int:
                                 sensitive=False,
                             )
                         )
+
+            # Antigravity Quota section
+            agy = read_agy_usage(self.results)
+            if self.config.showAgy and agy.has_data:
+                menu.append(Gtk.SeparatorMenuItem())
+                agy_groups = [
+                    ("Gemini", agy.gemini_5h, agy.gemini_weekly),
+                    ("Argon", None, agy.argon_weekly),
+                    ("3P (Claude/GPT)", agy.tp_5h, agy.tp_weekly),
+                ]
+                for name, b5h, bwk in agy_groups:
+                    if b5h is None and bwk is None:
+                        continue
+                    primary = bwk or b5h
+                    pct = int(primary.used_pct)
+                    left_pct = int(round(primary.remaining_fraction * 100))
+                    resets = f"resets in {until_string(primary.resets_at)}" if primary.resets_at and primary.resets_at >= time.time() else "window reset" if primary.resets_at else ""
+                    note = f"{left_pct}% left" + (f", {resets}" if resets else "")
+                    menu.append(
+                        self._make_item(f"{name} usage   {pct}%   ({note})", sensitive=False)
+                    )
+                    if b5h is not None and bwk is not None:
+                        b5_pct = int(b5h.used_pct)
+                        b5_left = int(round(b5h.remaining_fraction * 100))
+                        b5_resets = f"resets in {until_string(b5h.resets_at)}" if b5h.resets_at and b5h.resets_at >= time.time() else "window reset" if b5h.resets_at else ""
+                        b5_note = f"{b5_left}% left" + (f", {b5_resets}" if b5_resets else "")
+                        menu.append(
+                            self._make_item(f"    5h usage   {b5_pct}%   ({b5_note})", sensitive=False)
+                        )
+                if agy.updated is not None:
+                    menu.append(
+                        self._make_item(
+                            f"Antigravity quota as of {ago(agy.updated)} ago, from {agy.source or '?'}",
+                            sensitive=False,
+                        )
+                    )
 
                 missing = [r for r in self.results if r.error is None and r.hook == "none"]
                 for r in missing:
@@ -1024,7 +1348,7 @@ def run_tray_app() -> int:
 
         def on_activate_session(self, _item: Gtk.MenuItem, s: Session) -> None:
             if not s.pane:
-                resume_bin = f"agy --conversation {shlex.quote(s.sessionId)}" if s.entrypoint == "agy" else f"claude --resume {shlex.quote(s.sessionId)}"
+                resume_bin = f"agy --conversation {shlex.quote(s.sessionId)}" if s.entrypoint == "agy" else (f"codex resume {shlex.quote(s.sessionId)}" if s.entrypoint == "codex" else f"claude --resume {shlex.quote(s.sessionId)}")
                 cmd = f"cd {shlex.quote(s.cwd)} && {resume_bin}"
                 if s.ssh:
                     cmd = f"ssh -t {shlex.quote(s.ssh)} {shlex.quote(cmd)}"
