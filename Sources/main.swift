@@ -356,7 +356,7 @@ func writeSnapshot(_ results: [HostResult]) -> String {
 // Unread message counts per Claude session from the switchboard room server, if ~/.config/switchboard/room.json exists.
 
 /// The room server's /state: links, sessions, recent messages and unread counts. nil when not configured or unreachable.
-func fetchRoomState() -> (unread: [String: Int], json: String)? {
+func fetchRoomState() -> (unread: [String: Int], polling: Set<String>, json: String)? {
     let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/switchboard/room.json")
     guard let d = try? Data(contentsOf: url),
           let c = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
@@ -365,9 +365,12 @@ func fetchRoomState() -> (unread: [String: Int], json: String)? {
                                               base.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/state"], timeout: 5)
     guard code == 0, var j = try? JSONSerialization.jsonObject(with: Data(out.utf8)) as? [String: Any] else { return nil }
     let unread = (j["unread"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.intValue }
+    // sessions with `room listen` or `room wait` running (servers before room 0.1.5 don't report it)
+    let polling = Set((j["sessions"] as? [[String: Any]] ?? []).compactMap { s -> String? in
+        ((s["polling"] as? [Any])?.isEmpty == false) ? s["id"] as? String : nil })
     j["ok"] = true
     guard let d = try? JSONSerialization.data(withJSONObject: j) else { return nil }
-    return (unread, String(decoding: d, as: UTF8.self))
+    return (unread, polling, String(decoding: d, as: UTF8.self))
 }
 
 // MARK: - UI helpers
@@ -836,7 +839,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let room = fetchRoomState()
             DispatchQueue.main.async {
                 self.polling = false
-                if let r = room { self.updateRoomUnread(r.unread, sessions: out.compactMap { $0 }.flatMap { $0.sessions }) }
+                if let r = room { self.updateRoomUnread(r.unread, polling: r.polling, sessions: out.compactMap { $0 }.flatMap { $0.sessions }) }
                 self.roomJSON = room?.json ?? "null"
                 self.update(out.compactMap { $0 })
             }
@@ -867,11 +870,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderTitle()
     }
 
-    /// Notify when a session gets a new switchboard message: an idle session only reads it when you next use it.
-    func updateRoomUnread(_ u: [String: Int], sessions: [Session]) {
+    /// Notify when a session gets a new switchboard message: an idle session reads it when you next use it, unless
+    /// it runs `room listen` / `room wait`, which wake it for asks and replies.
+    func updateRoomUnread(_ u: [String: Int], polling: Set<String>, sessions: [Session]) {
         for (sid, n) in u where n > (roomUnread[sid] ?? 0) && (config.notify ?? true) {
             if let s = sessions.first(where: { $0.sessionId == sid }) {
-                notify(title: "✉ \(n) message\(n == 1 ? "" : "s") for \(s.name)", body: "\(s.host) · \(s.status == "idle" ? "idle: it reads them when you next prompt it" : "delivered at its next step")")
+                notify(title: "✉ \(n) message\(n == 1 ? "" : "s") for \(s.name)", body: "\(s.host) · \(s.status != "idle" ? "delivered at its next step" : polling.contains(sid) ? "idle, room listen/wait running: an ask or reply wakes it; otherwise it reads them when you next prompt it" : "idle: it reads them when you next prompt it")")
             }
         }
         roomUnread = u
