@@ -29,7 +29,7 @@ Your 5-hour and weekly usage come first, then one segment per host, in config or
 - Red: waiting for input. Shows the longest-waiting session's name in red, plus `+N` if more are waiting.
 - Orange: working (`busy`, `shell`, …). Each working session is shown separately with its name and how
   long it has been working, longest-running first.
-- Green: idle (split by tool when both are running, e.g. `🟢1 🟩2`). `✓2m` is the time since a session on that host last finished; it shows for an hour.
+- Green: idle (split by tool when both are running, e.g. `🟢1 🟩2`). `✓2m` is the time since a session on that host last finished; it shows for an hour. When the bar has room, idle sessions are listed by name (`🟢 api  🟢 docs ✓2m`), most recently finished first; otherwise they collapse to a count.
 - If everything doesn't fit in `maxWidth` (default 600 points), the title is shortened step by step:
   shorter names, then working sessions without names (`● 19m ● 1m`), then counts only.
   Raise `maxWidth` in the config if you have room; macOS hides a menu bar item that doesn't fit.
@@ -99,6 +99,11 @@ ControlMaster socket (`/tmp/cc-menubar-*`), so polling every few seconds stays c
 status, sessions, usage, and notifications. If all three are false, a small CCMenubar entry remains
 so you can edit/reload the config. Collection continues so showing a tool again picks up current data.
 After editing, use **Reload config** in the menu.
+
+`switchboardDir` (optional, default `~/workspace/switchboard`): if that folder has switchboard's `index.html`,
+the dropdown offers **Sessions board…** (⌘B), a window with that page fed by cc-menubar's own session data.
+Opening the app again also shows it. If `~/.config/switchboard/room.json` exists, cc-menubar also shows
+unread room messages (✉N) and sends a notification when a session gets one.
 
 ## License
 

@@ -738,9 +738,11 @@ def build_tool_title(
     last_finished: Dict[str, float],
     tool: str,
     level: int = 0,
+    expand_idle: bool = False,
 ) -> str:
     """
     Build top-bar title for a specific tool ('cc' or 'agy').
+    expand_idle: list each idle session by name instead of a count.
     level 0: full
     level 1: shorter names, tighter gaps
     level 2: working sessions as '🟠 time' without names
@@ -804,6 +806,15 @@ def build_tool_title(
                     groups_out.append(sep.join(items))
                     continue
 
+                if cat == "green" and expand_idle and level < 2:
+                    sorted_g = sorted(group, key=lambda s: s.statusSince if s.statusSince is not None else float("-inf"), reverse=True)
+                    piece = "  ".join(f"{dot} {clip(s.name)}" for s in sorted_g)
+                    done = last_finished.get(f"{tool}:{h.host.name}")
+                    if done is not None and (now - done) < 3600:
+                        piece += f" ✓{ago(done)}"
+                    groups_out.append(piece)
+                    continue
+
                 piece = f"{dot}{len(group)}"
                 oldest = min(group, key=lambda s: s.statusSince if s.statusSince is not None else float("inf"))
                 if level >= 3:
@@ -839,10 +850,12 @@ def render_compact_title(
 ) -> str:
     # Approximate 1 character ~ 7.5 points in top bar font
     max_chars = max(24, int(max_width / 7.5))
-    t = build_tool_title(results, last_finished, tool=tool, level=0)
-    for lvl in (1, 2, 3):
+    # Prefer listing idle sessions by name; fall back to the collapsed "🟢3 ✓2m" form.
+    attempts = [(0, True), (1, True), (0, False), (1, False), (2, False), (3, False)]
+    t = build_tool_title(results, last_finished, tool=tool, level=0, expand_idle=True)
+    for lvl, expand in attempts[1:]:
         if len(t) > max_chars:
-            t = build_tool_title(results, last_finished, tool=tool, level=lvl)
+            t = build_tool_title(results, last_finished, tool=tool, level=lvl, expand_idle=expand)
     return t
 
 
@@ -927,6 +940,38 @@ def has_tool_sessions(results: List[HostResult], tool: str) -> bool:
         r.error is not None or any(session_tool(s) == tool for s in r.sessions)
         for r in results
     )
+
+
+SNAPSHOT_PATH = Path.home() / ".cache" / "cc-menubar" / "sessions.json"
+
+
+def write_snapshot(results: List[HostResult]) -> None:
+    """Every host's sessions as JSON, for other tools (e.g. switchboard). Written atomically."""
+    snap = {
+        "generated": time.time(),
+        "hosts": [{"name": r.host.name, "ssh": r.host.ssh, "error": r.error} for r in results],
+        "sessions": [
+            {"host": s.host, "sessionId": s.sessionId, "name": s.name, "status": s.status,
+             "statusSince": s.statusSince, "cwd": s.cwd, "title": s.title, "pane": s.pane,
+             "tool": session_tool(s)}
+            for r in results for s in r.sessions
+        ],
+    }
+    try:
+        SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SNAPSHOT_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(snap))
+        os.replace(tmp, SNAPSHOT_PATH)
+    except OSError:
+        pass
+
+
+def snapshot_cli() -> int:
+    cfg = load_config()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(cfg.hosts))) as pool:
+        results = list(pool.map(collect, cfg.hosts))
+    write_snapshot(results)
+    return 0
 
 
 def run_once_cli() -> int:
@@ -1082,6 +1127,7 @@ def run_tray_app() -> int:
 
         def _on_poll_complete(self, results: List[HostResult]) -> bool:
             self.polling = False
+            write_snapshot(results)
             self.results = visible_results(results, self.config)
             all_sessions = [s for r in self.results for s in r.sessions]
 
@@ -1415,6 +1461,8 @@ def run_tray_app() -> int:
 
 
 def main() -> int:
+    if "--snapshot" in sys.argv:
+        return snapshot_cli()
     if "--once" in sys.argv or "--dump" in sys.argv:
         return run_once_cli()
     return run_tray_app()

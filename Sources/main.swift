@@ -2,6 +2,7 @@
 // Reads Claude Code's peer registry (~/.claude/sessions/<pid>.json) on each host.
 // That registry is an internal format and may change after a Claude Code upgrade.
 import Cocoa
+import WebKit
 import ServiceManagement
 
 // MARK: - Config
@@ -20,6 +21,7 @@ struct Config: Codable {
     var showClaude: Bool? = true
     var showAgy: Bool? = true
     var showCodex: Bool? = true
+    var switchboardDir: String?   // folder with switchboard's index.html (default ~/workspace/switchboard, if present)
 
     func shows(_ tool: String) -> Bool {
         switch tool {
@@ -328,6 +330,44 @@ func collect(_ host: HostConfig) -> HostResult {
     }
     res.sessions.sort { ($0.status == "idle" ? 1 : 0, $0.name) < ($1.status == "idle" ? 1 : 0, $1.name) }
     return res
+}
+
+// MARK: - Snapshot
+// Every host's sessions as JSON for other tools (e.g. switchboard): ~/.cache/cc-menubar/sessions.json
+
+let snapshotURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/cc-menubar/sessions.json")
+
+@discardableResult
+func writeSnapshot(_ results: [HostResult]) -> String {
+    let hosts: [[String: Any]] = results.map { ["name": $0.host.name, "ssh": $0.host.ssh ?? NSNull(), "error": $0.error ?? NSNull()] }
+    let sessions: [[String: Any]] = results.flatMap { $0.sessions }.map { s in
+        ["host": s.host, "sessionId": s.sessionId, "name": s.name, "status": s.status,
+         "statusSince": s.statusSince.map { $0.timeIntervalSince1970 as Any } ?? NSNull(),
+         "cwd": s.cwd, "title": s.title, "pane": s.pane ?? NSNull(), "tool": sessionTool(s)]
+    }
+    let snap: [String: Any] = ["generated": Date().timeIntervalSince1970, "hosts": hosts, "sessions": sessions]
+    guard let data = try? JSONSerialization.data(withJSONObject: snap) else { return "null" }
+    try? FileManager.default.createDirectory(at: snapshotURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? data.write(to: snapshotURL, options: .atomic)
+    return String(decoding: data, as: UTF8.self)
+}
+
+// MARK: - switchboard room (optional)
+// Unread message counts per Claude session from the switchboard room server, if ~/.config/switchboard/room.json exists.
+
+/// The room server's /state: links, sessions, recent messages and unread counts. nil when not configured or unreachable.
+func fetchRoomState() -> (unread: [String: Int], json: String)? {
+    let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/switchboard/room.json")
+    guard let d = try? Data(contentsOf: url),
+          let c = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+          let base = c["url"] as? String, let token = c["token"] as? String else { return nil }
+    let (code, out, _) = run("/usr/bin/curl", ["-s", "--max-time", "3", "-H", "Authorization: Bearer \(token)",
+                                              base.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/state"], timeout: 5)
+    guard code == 0, var j = try? JSONSerialization.jsonObject(with: Data(out.utf8)) as? [String: Any] else { return nil }
+    let unread = (j["unread"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.intValue }
+    j["ok"] = true
+    guard let d = try? JSONSerialization.data(withJSONObject: j) else { return nil }
+    return (unread, String(decoding: d, as: UTF8.self))
 }
 
 // MARK: - UI helpers
@@ -713,6 +753,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var config = loadConfig()
     var results: [HostResult] = []
     var lastStatus: [String: String] = [:]
+    var roomUnread: [String: Int] = [:]          // sessionId -> unread switchboard messages
+    var roomJSON = "null"
+    var board: Board?
+
+    /// switchboard's folder, when its page is there (config switchboardDir, else ~/workspace/switchboard).
+    var boardDir: URL? {
+        let path = (config.switchboardDir ?? "~/workspace/switchboard") as NSString
+        let dir = URL(fileURLWithPath: path.expandingTildeInPath)
+        let fm = FileManager.default
+        return fm.fileExists(atPath: dir.appendingPathComponent("index.html").path)
+            && fm.fileExists(atPath: dir.appendingPathComponent("graph.js").path) ? dir : nil
+    }
+
+    /// Opening the app again (Spotlight, Finder, `open -a CCMenubar`) shows the Sessions board.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openBoard()
+        return false
+    }
+
+    @objc func openBoard() {
+        guard let dir = boardDir else { return }
+        if NSApp.mainMenu == nil {   // menu bar apps have none; without it ⌘C/⌘V/⌘W don't work in the window
+            let main = NSMenu(), appItem = NSMenuItem(), editItem = NSMenuItem()
+            let appMenu = NSMenu(), edit = NSMenu(title: "Edit")
+            appMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+            for (t, sel, k) in [("Undo", Selector(("undo:")), "z"), ("Cut", #selector(NSText.cut(_:)), "x"), ("Copy", #selector(NSText.copy(_:)), "c"),
+                                ("Paste", #selector(NSText.paste(_:)), "v"), ("Select All", #selector(NSText.selectAll(_:)), "a")] {
+                edit.addItem(withTitle: t, action: sel, keyEquivalent: k)
+            }
+            appItem.submenu = appMenu; editItem.submenu = edit
+            main.addItem(appItem); main.addItem(editItem)
+            NSApp.mainMenu = main
+        }
+        if board == nil || board?.dir != dir { board = Board(dir: dir, app: self) }
+        board?.show()
+        poll()
+    }
     var lastFinished: [String: Date] = [:]   // host name -> when a session there last went working -> idle
     var timer: Timer?
     var ticker: Timer?
@@ -756,14 +833,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let r = collect(hosts[i])
                 lock.lock(); out[i] = r; lock.unlock()
             }
+            let room = fetchRoomState()
             DispatchQueue.main.async {
                 self.polling = false
+                if let r = room { self.updateRoomUnread(r.unread, sessions: out.compactMap { $0 }.flatMap { $0.sessions }) }
+                self.roomJSON = room?.json ?? "null"
                 self.update(out.compactMap { $0 })
             }
         }
     }
 
     func update(_ r: [HostResult]) {
+        let snap = writeSnapshot(r)
+        board?.push(snapshot: snap, room: roomJSON)
         results = r
         let all = r.flatMap { $0.sessions }
         // A working session became idle: remember when (for "✓2m") and notify.
@@ -785,10 +867,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderTitle()
     }
 
+    /// Notify when a session gets a new switchboard message: an idle session only reads it when you next use it.
+    func updateRoomUnread(_ u: [String: Int], sessions: [Session]) {
+        for (sid, n) in u where n > (roomUnread[sid] ?? 0) && (config.notify ?? true) {
+            if let s = sessions.first(where: { $0.sessionId == sid }) {
+                notify(title: "✉ \(n) message\(n == 1 ? "" : "s") for \(s.name)", body: "\(s.host) · \(s.status == "idle" ? "idle: it reads them when you next prompt it" : "delivered at its next step")")
+            }
+        }
+        roomUnread = u
+    }
+
     func renderTitle() {
         let maxW = CGFloat(config.maxWidth ?? 600)
-        var t = buildTitle(results, level: 0)
-        for level in 1...3 where t.size().width > maxW { t = buildTitle(results, level: level) }
+        // Prefer listing idle sessions by name; fall back to the collapsed "●3 ✓2m" form.
+        let attempts: [(Int, Bool)] = [(0, true), (1, true), (0, false), (1, false), (2, false), (3, false)]
+        let live = Set(results.flatMap { $0.sessions }.map { $0.sessionId })
+        let unread = roomUnread.filter { live.contains($0.key) }.values.reduce(0, +)
+        func withMail(_ a: NSAttributedString) -> NSAttributedString {
+            guard unread > 0 else { return a }
+            let m = NSMutableAttributedString(attributedString: a)
+            m.append(NSAttributedString(string: "  ✉\(unread)", attributes: [.foregroundColor: NSColor.systemPurple]))
+            return m
+        }
+        var t = withMail(buildTitle(results, level: 0, expandIdle: true))
+        for (level, expand) in attempts.dropFirst() where t.size().width > maxW {
+            t = withMail(buildTitle(results, level: level, expandIdle: expand))
+        }
         item.button?.attributedTitle = t
     }
 
@@ -803,7 +907,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// level 0: full · 1: shorter names, tighter gaps · 2: working sessions as "● time" without names · 3: counts only.
-    func buildTitle(_ r: [HostResult], level: Int) -> NSAttributedString {
+    /// expandIdle: list each idle session by name instead of a count.
+    func buildTitle(_ r: [HostResult], level: Int, expandIdle: Bool = false) -> NSAttributedString {
         let t = NSMutableAttributedString()
         let nameLen = level == 0 ? 20 : 12
         let hostGap = level == 0 ? "     " : level == 1 ? "    " : "   "
@@ -847,6 +952,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                 if level < 2 { t.append(NSAttributedString(string: " " + clip(s.name))) }
                                 let since = ago(s.statusSince)
                                 if !since.isEmpty { t.append(NSAttributedString(string: " " + since, attributes: timeAttr)) }
+                            }
+                            first = false
+                            continue
+                        }
+                        if c == .systemGreen && expandIdle && level < 2 {
+                            let sorted = group.sorted { ($0.statusSince ?? .distantPast) > ($1.statusSince ?? .distantPast) }
+                            for (k, s) in sorted.enumerated() {
+                                if k > 0 { t.append(NSAttributedString(string: "  ")) }
+                                t.append(NSAttributedString(string: symbol, attributes: [.foregroundColor: c]))
+                                t.append(NSAttributedString(string: " " + clip(s.name)))
+                            }
+                            if let done = lastFinished[prefix + h.host.name], Date().timeIntervalSince(done) < 3600 {
+                                t.append(NSAttributedString(string: " ✓" + ago(done), attributes: timeAttr))
                             }
                             first = false
                             continue
@@ -972,7 +1090,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let title = (s.title.isEmpty || s.title == "Claude Code") ? "" : s.title
             let sym = statusSymbol(sessionTool(s)) + " "
             return [(sym, nameFont, color(for: s.status)),
-                    (clip(s.name, 36), nameFont, .labelColor),
+                    (clip(s.name, 36) + ((roomUnread[s.sessionId] ?? 0) > 0 ? "  ✉\(roomUnread[s.sessionId]!)" : ""), nameFont, .labelColor),
                     ("\(s.status) \(ago(s.statusSince))", small, dim),
                     (clip(title, 48), small, .labelColor),
                     (shortPath(s.cwd), mono, dim)]
@@ -1158,6 +1276,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(mi)
         }
         menu.addItem(.separator())
+        if boardDir != nil {
+            let unread = roomUnread.filter { k, _ in results.contains { $0.sessions.contains { $0.sessionId == k } } }.values.reduce(0, +)
+            let b = NSMenuItem(title: "Sessions board…" + (unread > 0 ? "   ✉\(unread)" : ""), action: #selector(openBoard), keyEquivalent: "b")
+            b.target = self
+            menu.addItem(b)
+        }
         let refresh = NSMenuItem(title: "Refresh now", action: #selector(refreshNow), keyEquivalent: "r")
         let edit = NSMenuItem(title: "Edit hosts…", action: #selector(editConfig), keyEquivalent: ",")
         let reload = NSMenuItem(title: "Reload config", action: #selector(reloadConfig), keyEquivalent: "l")
@@ -1170,6 +1294,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func activate(_ sender: NSMenuItem) {
         guard let s = sender.representedObject as? Session else { return }
+        activateSession(s)
+    }
+
+    /// From the Sessions board: host + session id.
+    func activateSession(host: String, sessionId: String) {
+        if let s = results.flatMap({ $0.sessions }).first(where: { $0.host == host && $0.sessionId == sessionId }) { activateSession(s) }
+    }
+
+    /// Switch tmux to the session's pane and bring the terminal forward; without a pane, copy a resume command.
+    func activateSession(_ s: Session) {
         guard let pane = s.pane else {
             // No tmux pane (e.g. desktop app session): copy a resume command instead.
             let resume = s.entrypoint == "codex" ? "codex resume \(shQuote(s.sessionId))" : (s.entrypoint == "agy" ? "agy --conversation \(s.sessionId)" : "claude --resume \(s.sessionId)")
@@ -1293,3 +1427,129 @@ let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)   // menu bar only, no Dock icon
 app.run()
+
+
+// MARK: - Sessions board
+// switchboard's page in a window. cc-menubar feeds it sessions + room state on every poll; the page sends back
+// actions: jump to a session, save an edit (layout/config/labels json), re-tidy the layout.
+
+final class Board: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
+    let dir: URL
+    weak var app: AppDelegate?
+    var window: NSWindow?
+    var web: WKWebView?
+    var lastFeed: (String, String)?
+
+    init(dir: URL, app: AppDelegate) { self.dir = dir; self.app = app }
+
+    func show() {
+        if window == nil { build() }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func build() {
+        let cfg = WKWebViewConfiguration()
+        cfg.userContentController.add(self, name: "ccmenubar")
+        let w = WKWebView(frame: .zero, configuration: cfg)
+        w.navigationDelegate = self
+        w.uiDelegate = self
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1320, height: 840),
+                           styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+        win.title = "Switchboard"
+        win.isReleasedWhenClosed = false
+        win.contentView = w
+        win.center()
+        win.setFrameAutosaveName("SwitchboardBoard")
+        web = w; window = win
+        load()
+    }
+
+    func load() {
+        var c = URLComponents(url: dir.appendingPathComponent("index.html"), resolvingAgainstBaseURL: false)!
+        c.fragment = "sessions"
+        web?.loadFileURL(c.url!, allowingReadAccessTo: dir)
+    }
+
+    func push(snapshot: String, room: String) {
+        lastFeed = (snapshot, room)
+        guard window?.isVisible == true else { return }
+        web?.evaluateJavaScript("window.ccFeed && window.ccFeed(\(snapshot), \(room))", completionHandler: nil)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if let f = lastFeed { push(snapshot: f.0, room: f.1) }
+    }
+
+    // Links to GitHub etc. open in the browser.
+    func webView(_ webView: WKWebView, decidePolicyFor a: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if let u = a.request.url, u.scheme == "http" || u.scheme == "https" { NSWorkspace.shared.open(u); decisionHandler(.cancel); return }
+        decisionHandler(.allow)
+    }
+    func webView(_ webView: WKWebView, createWebViewWith c: WKWebViewConfiguration, for a: WKNavigationAction, windowFeatures f: WKWindowFeatures) -> WKWebView? {
+        if let u = a.request.url { NSWorkspace.shared.open(u) }
+        return nil
+    }
+
+    // confirm() and prompt() (label editing, Tidy layout) as native alerts.
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        let a = NSAlert(); a.messageText = message; a.addButton(withTitle: "OK"); a.addButton(withTitle: "Cancel")
+        completionHandler(a.runModal() == .alertFirstButtonReturn)
+    }
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
+        let a = NSAlert(); a.messageText = prompt; a.addButton(withTitle: "OK"); a.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24)); field.stringValue = defaultText ?? ""
+        a.accessoryView = field
+        a.window.initialFirstResponder = field
+        completionHandler(a.runModal() == .alertFirstButtonReturn ? field.stringValue : nil)
+    }
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        let a = NSAlert(); a.messageText = message; a.runModal(); completionHandler()
+    }
+
+    func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+        guard let b = m.body as? [String: Any], let action = b["action"] as? String else { return }
+        switch action {
+        case "activate":
+            if let host = b["host"] as? String, let sid = b["sessionId"] as? String { app?.activateSession(host: host, sessionId: sid) }
+        case "save":
+            guard let kind = b["kind"] as? String, ["layout", "config", "labels"].contains(kind),
+                  let patch = b["patch"] as? [String: Any] else { return }
+            let url = dir.appendingPathComponent(kind + ".json")
+            var cur = (try? Data(contentsOf: url)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            cur.merge(patch) { _, new in new }
+            if let d = try? JSONSerialization.data(withJSONObject: cur, options: [.prettyPrinted, .sortedKeys]) { try? d.write(to: url, options: .atomic) }
+            scan(["--render-only"], reload: false)
+        case "relayout":
+            scan(["--render-only", "--relayout"], reload: true)
+        case "tasks":   // switchboard's tasks.py: add / set / edit / review / collect / send
+            guard let args = b["args"] as? [String], let cmd = args.first,
+                  ["add", "set", "edit", "review", "collect", "send"].contains(cmd) else { return }
+            let script = dir.appendingPathComponent("tasks/tasks.py").path
+            DispatchQueue.global().async {
+                let (code, out, err) = run("/usr/bin/env", ["python3", script] + args, timeout: 120)
+                DispatchQueue.main.async {
+                    self.web?.evaluateJavaScript("window.tasksChanged && window.tasksChanged()", completionHandler: nil)
+                    if cmd == "send" || code != 0 {
+                        let a = NSAlert(); a.messageText = code == 0 ? "Sent" : "tasks \(cmd) failed"
+                        a.informativeText = String((out + err).suffix(600)); a.runModal()
+                    }
+                }
+            }
+        case "open":   // a TODO file, in its default app
+            guard let path = b["path"] as? String else { return }
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            if url.path.hasPrefix(NSHomeDirectory() + "/") && FileManager.default.fileExists(atPath: url.path) { NSWorkspace.shared.open(url) }
+        default: break
+        }
+    }
+
+    /// Re-render graph.js / the vault with switchboard's scan.py (no rescan).
+    private func scan(_ args: [String], reload: Bool) {
+        let script = dir.appendingPathComponent("scan.py").path
+        DispatchQueue.global().async {
+            _ = run("/usr/bin/env", ["python3", script] + args, timeout: 60)
+            if reload { DispatchQueue.main.async { self.load() } }
+        }
+    }
+}
